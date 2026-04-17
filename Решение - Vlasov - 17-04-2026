@@ -1,0 +1,130 @@
+РЕШЕНИЕ – VLASOV – 17-04-2026 +
+1. Произведения с более чем 5 переизданиями
+SELECT 
+    p.title,
+    COUNT(e.edition_id) as edition_count
+FROM 
+    products p
+JOIN 
+    editions e ON p.product_id = e.product_id
+GROUP BY 
+    p.title
+HAVING 
+    COUNT(e.edition_id) > 5
+ORDER BY 
+    edition_count DESC;
+2. Экземпляры без привязки к изданию
+SELECT 
+    i.instance_id,
+    i.inventory_number
+FROM 
+    instances i
+LEFT JOIN 
+    edition_instances ei ON i.instance_id = ei.instance_id
+WHERE 
+    ei.edition_id IS NULL;
+3. Последние три взятых произведения с количеством выдач
+WITH recent_borrows AS (
+    SELECT 
+        b.user_id,
+        b.product_id,
+        b.borrow_date,
+        ROW_NUMBER() OVER (PARTITION BY b.user_id ORDER BY b.borrow_date DESC) as rn
+    FROM 
+        borrows b
+),
+product_popularity AS (
+    SELECT 
+        product_id,
+        COUNT(*) as total_borrows
+    FROM 
+        borrows
+    GROUP BY 
+        product_id
+)
+SELECT 
+    r.user_id,
+    p.title,
+    r.borrow_date,
+    pp.total_borrows
+FROM 
+    recent_borrows r
+JOIN 
+    products p ON r.product_id = p.product_id
+JOIN 
+    product_popularity pp ON r.product_id = pp.product_id
+WHERE 
+    r.rn <= 3
+ORDER BY 
+    r.user_id, r.borrow_date DESC;
+4. Рейтинг неблагонадежных пользователей
+Предложенные критерии неблагонадежности:
+•	Количество просрочек
+•	Количество невозвращенных книг
+•	Частота обращений (менее 1 раза в 3 месяца)
+•	Наличие штрафов
+•	История нарушений правил библиотеки
+WITH user_metrics AS (
+    SELECT
+        u.user_id,
+        COUNT(CASE WHEN b.return_date > b.due_date THEN 1 END) as overdue_count,
+        COUNT(CASE WHEN b.return_date IS NULL THEN 1 END) as unreturned_count,
+        COUNT(*) as borrow_count,
+        SUM(f.amount) as total_fines,
+        COUNT(DISTINCT DATE_TRUNC('month', b.borrow_date)) as active_months
+    FROM
+        users u
+    LEFT JOIN 
+        borrows b ON u.user_id = b.user_id
+    LEFT JOIN 
+        fines f ON u.user_id = f.user_id
+    GROUP BY 
+        u.user_id
+),
+risk_score AS (
+    SELECT
+        user_id,
+        overdue_count * 2 AS overdue_score,
+        unreturned_count * 5 AS unreturned_score,
+        CASE 
+            WHEN borrow_count < 4 THEN 3
+            WHEN borrow_count < 8 THEN 2
+            ELSE 1
+        END AS frequency_score,
+        CASE 
+            WHEN total_fines > 0 THEN 4
+            ELSE 0
+        END AS fine_score,
+        CASE 
+            WHEN active_months < 4 THEN 2
+            ELSE 0
+        END AS activity_score,
+        (overdue_score + unreturned_score + frequency_score + fine_score + activity_score) as total_risk
+    FROM 
+        user_metrics
+)
+SELECT
+    u.user_id,
+    u.full_name,
+    total_risk,
+    overdue_count,
+    unreturned_count,
+    borrow_count,
+    total_fines,
+    active_months
+FROM 
+    risk_score rs
+JOIN 
+    users u ON rs.user_id = u.user_id
+WHERE 
+    total_risk >= 5
+ORDER BY 
+    total_risk DESC
+LIMIT 10;
+Примечание: В запросах предполагается наличие следующих таблиц:
+•	products (произведения)
+•	editions (издания)
+•	instances (экземпляры)
+
+
+
