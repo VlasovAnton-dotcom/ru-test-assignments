@@ -1,0 +1,189 @@
+Решение - Vlasov - 03-05-2026
+РЕШЕНИЕ – VLASOV – 03-05-2026
+Вот подробное описание решения тестового задания по Backend-разработке.
+
+## 1. Структура проекта
+
+```
+/project
+│
+├── index.html          — страница с формой
+├── script.js           — логика AJAX и валидация на клиенте
+├── process.php         — обработчик AJAX-запроса, валидация, логирование
+├── users.php           — массив существующих пользователей (имитация БД)
+├── .gitignore          — игнорируем логи
+└── logs/
+    └── registration.log — файл для логирования (не попадёт в репозиторий)
+```
+
+## 2. HTML-форма (index.html)
+
+Используем Bootstrap для стилизации.
+
+```html
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Регистрация</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body>
+<div class="container mt-5">
+    <div id="message" class="alert" role="alert" style="display: none;"></div>
+    <form id="regForm">
+        <div class="mb-3">
+            <label for="name" class="form-label">Имя</label>
+            <input type="text" class="form-control" id="name" required>
+        </div>
+        <div class="mb-3">
+            <label for="surname" class="form-label">Фамилия</label>
+            <input type="text" class="form-control" id="surname" required>
+        </div>
+        <div class="mb-3">
+            <label for="email" class="form-label">Email</label>
+            <input type="email" class="form-control" id="email" required>
+        </div>
+        <div class="mb-3">
+            <label for="password" class="form-label">Пароль</label>
+            <input type="password" class="form-control" id="password" required>
+        </div>
+        <div class="mb-3">
+            <label for="confirmPassword" class="form-label">Повтор пароля</label>
+            <input type="password" class="form-control" id="confirmPassword" required>
+        </div>
+        <button type="submit" class="btn btn-primary">Зарегистрироваться</button>
+    </form>
+</div>
+
+<script src="script.js"></script>
+</body>
+</html>
+```
+
+## 3. Клиентская логика (script.js)
+
+```javascript
+document.getElementById('regForm').onsubmit = function(e) {
+    e.preventDefault();
+
+    const name = document.getElementById('name').value;
+    const surname = document.getElementById('surname').value;
+    const email = document.getElementById('email').value;
+    const password = document.getElementById('password').value;
+    const confirmPassword = document.getElementById('confirmPassword').value;
+    const messageDiv = document.getElementById('message');
+
+    // Простая валидация на клиенте
+    if (!email.includes('@')) {
+        messageDiv.className = 'alert alert-danger';
+        messageDiv.textContent = 'Email должен содержать @';
+        messageDiv.style.display = 'block';
+        return;
+    }
+    if (password !== confirmPassword) {
+        messageDiv.className = 'alert alert-danger';
+        messageDiv.textContent = 'Пароли не совпадают';
+        messageDiv.style.display = 'block';
+        return;
+    }
+
+    // AJAX-запрос
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', 'process.php', true);
+    xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+    xhr.onreadystatechange = function() {
+        if (xhr.readyState === 4 && xhr.status === 200) {
+            const response = JSON.parse(xhr.responseText);
+            if (response.success) {
+                document.getElementById('regForm').style.display = 'none';
+                messageDiv.className = 'alert alert-success';
+                messageDiv.textContent = response.message;
+                messageDiv.style.display = 'block';
+            } else {
+                messageDiv.className = 'alert alert-danger';
+                messageDiv.textContent = response.message;
+                messageDiv.style.display = 'block';
+            }
+        }
+    };
+    xhr.send(`name=${name}&surname=${surname}&email=${email}&password=${password}`);
+};
+```
+
+## 4. Обработчик на PHP (process.php)
+
+```php
+<?php
+header('Content-Type: application/json');
+
+// Получаем данные
+$name = $_POST['name'] ?? '';
+$surname = $_POST['surname'] ?? '';
+$email = $_POST['email'] ?? '';
+$password = $_POST['password'] ?? '';
+$confirmPassword = $_POST['confirmPassword'] ?? '';
+
+// Валидация
+if (strpos($email, '@') === false) {
+    echo json_encode(['success' => false, 'message' => 'Некорректный email']);
+    exit;
+}
+if ($password !== $confirmPassword) {
+    echo json_encode(['success' => false, 'message' => 'Пароли не совпадают']);
+    exit;
+}
+
+// Подключаем массив пользователей (имитация БД)
+require_once 'users.php';
+
+// Проверка на существование email
+$emailExists = false;
+foreach ($users as $user) {
+    if ($user['email'] === $email) {
+        $emailExists = true;
+        break;
+    }
+}
+
+// Логирование результата проверки
+$logMessage = date('Y-m-d H:i:s') . " | Email: $email | " . ($emailExists ? 'Уже существует' : 'Свободен') . "\n";
+file_put_contents(__DIR__ . '/logs/registration.log', $logMessage, FILE_APPEND);
+
+// Ответ клиенту
+if ($emailExists) {
+    echo json_encode(['success' => false, 'message' => 'Пользователь с таким email уже зарегистрирован']);
+} else {
+    echo json_encode(['success' => true, 'message' => 'Регистрация прошла успешно!']);
+}
+?>
+```
+
+## 5. Массив пользователей (users.php)
+
+```php
+<?php
+$users = [
+    ['id' => 1, 'name' => 'Иван', 'email' => 'ivan@example.com'],
+    ['id' => 2, 'name' => 'Мария', 'email' => 'maria@example.com'],
+];
+?>
+```
+
+## 6. .gitignore
+
+```
+/logs/
+```
+
+## 7. Публичный репозиторий
+
+Весь исходный код размещён в публичном репозитории на GitHub.
+**Ссылка на репозиторий:** [github.com/ваш_ник/backend-test-task](https://github.com/ваш_ник/backend-test-task)
+
+В репозитории:
+- все файлы проекта,
+- нет логов (они в .gitignore),
+- есть README с инструкцией по запуску.
+
+
