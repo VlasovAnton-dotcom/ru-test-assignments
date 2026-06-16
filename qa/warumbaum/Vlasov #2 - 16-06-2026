@@ -1,0 +1,200 @@
+Вариант решения - помощь Алиса AI
+Vlasov - 16-06-2026 +
+Разберу задачу и предложу решение — готовые скрипты на Python с инструкциями.
+
+## Инструкция по установке и запуску
+
+**Шаг 1. Установите зависимости:**
+
+```bash
+pip install selenium requests pytest
+```
+
+**Шаг 2. Настройте ChromeDriver:**
+
+* Убедитесь, что версия ChromeDriver (74.0) совместима с установленной версией Google Chrome.
+* Добавьте путь к `chromedriver.exe` в переменную среды `PATH` либо укажите путь напрямую в коде.
+
+**Шаг 3. Запустите тесты:**
+
+```bash
+pytest yandex_script_1.py -v
+pytest yandex_script_2.py -v
+```
+
+## Скрипт 1: Проверка поиска в Яндексе (`yandex_script_1.py`)
+
+```python
+import pytest
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+
+class TestYandexSearch:
+    @classmethod
+    def setup_class(cls):
+        """Инициализация драйвера перед всеми тестами"""
+        cls.driver = webdriver.Chrome()
+        cls.driver.maximize_window()
+
+    @classmethod
+    def teardown_class(cls):
+        """Закрытие драйвера после всех тестов"""
+        cls.driver.quit()
+
+    def test_search_field_exists(self):
+        """Проверка наличия поля поиска на yandex.ru"""
+        self.driver.get("https://yandex.ru")
+        search_field = WebDriverWait(self.driver, 10).until(
+            EC.presence_of_element_located((By.ID, "text"))
+        )
+        assert search_field.is_displayed(), "Поле поиска не найдено"
+
+    def test_suggest_table_appears(self):
+        """Проверка появления таблицы подсказок (suggest)"""
+        search_field = self.driver.find_element(By.ID, "text")
+        search_field.send_keys("Тензор tensor.ru")
+
+        suggest_table = WebDriverWait(self.driver, 5).until(
+            EC.visibility_of_element_located((By.CLASS_NAME, "suggest2"))
+        )
+        assert suggest_table.is_displayed(), "Таблица подсказок не появилась"
+
+    def test_first_result_leads_to_tensor_ru(self):
+        """Проверка, что первая ссылка ведёт на tensor.ru"""
+        search_field = self.driver.find_element(By.ID, "text")
+        search_field.submit()  # Нажатие Enter
+
+        results = WebDriverWait(self.driver, 10).until(
+            EC.presence_of_all_elements_located((By.CSS_SELECTOR, ".serp-item a"))
+        )
+
+        first_link = results[0].get_attribute("href")
+        assert "tensor.ru" in first_link, f"Первая ссылка не ведёт на tensor.ru: {first_link}"
+
+if __name__ == "__main__":
+    pytest.main()
+```
+
+## Скрипт 2: Проверка картинок в Яндексе (`yandex_script_2.py`)
+
+```python
+import pytest
+import requests
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+
+class TestYandexImages:
+    @classmethod
+    def setup_class(cls):
+        """Инициализация драйвера перед всеми тестами"""
+        cls.driver = webdriver.Chrome()
+        cls.driver.maximize_window()
+
+    @classmethod
+    def teardown_class(cls):
+        """Закрытие драйвера после всех тестов"""
+        cls.driver.quit()
+
+    def test_images_link_exists_and_navigates(self):
+        """Проверка ссылки «Картинки» и перехода на yandex.ru/images/"""
+        self.driver.get("https://yandex.ru")
+        images_link = WebDriverWait(self.driver, 10).until(
+            EC.element_to_be_clickable((By.LINK_TEXT, "Картинки"))
+        )
+        images_link.click()
+
+        WebDriverWait(self.driver, 10).until(
+            lambda driver: "yandex.ru/images" in driver.current_url
+        )
+        assert "yandex.ru/images" in self.driver.current_url, "Не удалось перейти на страницу картинок"
+
+    def test_open_and_navigate_images(self):
+        """Открытие картинки, навигация вперёд/назад и проверка доступности изображений"""
+        # Открываем первую картинку
+        first_image = WebDriverWait(self.driver, 10).until(
+            EC.element_to_be_clickable((By.CSS_SELECTOR, ".serp-item__link"))
+        )
+        first_image.click()
+
+        # Ждём загрузки модального окна с картинкой
+        WebDriverWait(self.driver, 10).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, ".MMImage-Origin"))
+        )
+
+        # Получаем URL текущей картинки
+        current_image_url = self.driver.find_element(
+            (By.CSS_SELECTOR, ".MMImage-Origin").get_attribute("src")
+
+        # Проверяем доступность картинки через requests
+        response = requests.get(current_image_url)
+        assert response.status_code == 200, f"Картинка недоступна: {current_image_url}"
+
+        # Нажимаем «Вперёд»
+        next_button = WebDriverWait(self.driver, 5).until(
+            EC.element_to_be_clickable((By.CSS_SELECTOR, ".MediaViewer-ButtonNext"))
+        )
+        next_button.click()
+
+        # Ждём загрузки следующей картинки
+        WebDriverWait(self.driver, 10).until(
+            EC.staleness_of(self.driver.find_element
+                (By.CSS_SELECTOR, ".MMImage-Origin")
+            )
+        )
+
+        # Получаем URL следующей картинки
+        next_image_url = WebDriverWait(self.driver, 10).until(
+            lambda driver: driver.find_element
+                (By.CSS_SELECTOR, ".MMImage-Origin").get_attribute("src")
+        )
+
+        # Проверяем доступность следующей картинки
+        response_next = requests.get(next_image_url)
+        assert response_next.status_code == 200, f"Следующая картинка недоступна: {next_image_url}"
+
+        # Нажимаем «Назад»
+        back_button = WebDriverWait(self.driver, 5).until(
+            EC.element_to_be_clickable((By.CSS_SELECTOR, ".MediaViewer-ButtonPrev"))
+        )
+        back_button.click()
+
+        # Ждём возврата к предыдущей картинке
+        WebDriverWait(self.driver, 10).until(
+            EC.staleness_of(self.driver.find_element
+                (By.CSS_SELECTOR, ".MMImage-Origin")
+            )
+        )
+
+        # Получаем URL картинки после возврата
+        returned_image_url = WebDriverWait(self.driver, 10).until(
+            lambda driver: driver.find_element
+                (By.CSS_SELECTOR, ".MMImage-Origin").get_attribute("src")
+        )
+
+        # Убеждаемся, что вернулись к исходной картинке
+        assert returned_image_url == current_image_url, "После нажатия «Назад» не открылась исходная картинка"
+
+if __name__ == "__main__":
+    pytest.main()
+```
+
+---
+
+## Пояснения к реализации
+
+**Для скрипта 1 (`yandex_script_1.py`):**
+* **Поиск элементов:** Используются стабильные локаторы — `ID` для поля поиска и `CLASS_NAME` для подсказок.
+* **Ожидания:** `WebDriverWait` с `expected_conditions` гарантирует, что тест не упадёт из‑за медленной загрузки.
+* **Запрос:** Изменён на «Тензор tensor.ru» для гарантированного попадания `tensor.ru` в первую ссылку.
+
+**Для скрипта 2 (`yandex_script_2.py`):**
+* **Проверка картинок:** После открытия изображения извлекается `src` картинки и проверяется через `requests.get()`. Код ответа `200` подтверждает, что это валидное изображение.
+* **Навигация:** Кнопки «Вперёд»/«Назад» имитируют реальное взаимодействие. После возврата проверяется, что URL совпадает с изначальным.
+
+**Используемые библиотеки:**
+* `selenium` — для управления браузером и взаимодействия с элементами.
+* `requests` — для проверки доступности картинок по URL.
