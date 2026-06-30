@@ -1,0 +1,234 @@
+Для реализации бэкенда веб-приложения расписания автобусов на PHP (7+) с базой данных PostgreSQL, отвечающего всем заявленным требованиям, предлагается следующая архитектура и структура проекта.
+
+1. Выбор стека технологий
+Язык: PHP 8.x (обеспечивает строгую типизацию и современные возможности).
+Фреймворк: Laravel 10/11. Он идеально подходит для REST API, имеет встроенные инструменты для работы с БД (Eloquent ORM), миграциями, валидацией запросов и тестированием. Использование готового фреймворка значительно повышает качество кода и скорость разработки по сравнению с чистым PHP.
+База данных: PostgreSQL. Поддержка массивов (ARRAY[]) и сложных типов данных позволит эффективно хранить расписание.
+Архитектура: MVC + Repository Pattern для разделения бизнес-логики от слоя доступа к данным.
+Тестирование: PHPUnit (встроен в Laravel).
+Запуск: Docker Compose для изоляции окружения и простоты развертывания.
+2. Проектирование базы данных (PostgreSQL)
+
+Схема спроектирована с учетом того, что маршрут автобуса — это не просто список остановок, а последовательность пар "остановка -> время прибытия". Это позволяет корректно рассчитывать время в пути.
+
+Основные таблицы:
+
+buses (Автобусы):
+
+id: PK
+number: VARCHAR(10) (Номер маршрута)
+headsign: VARCHAR(50) (Конечная остановка, напр. "ул. Ленина")
+
+stops (Остановки):
+
+id: PK
+name: VARCHAR(100) (Название остановки)
+
+routes (Направления движения):
+
+id: PK
+bus_id: FK to buses.id
+direction: ENUM ('forward', 'backward') (Прямое или обратное направление)
+headsign: VARCHAR(50) (Текстовое описание направления, например, "В сторону ул. Попова")
+
+route_stops (Точки маршрута):
+
+id: PK
+route_id: FK to routes.id
+stop_id: FK to stops.id
+order_index: INT (Порядковый номер остановки в маршруте)
+arrival_times: TEXT[] (Массив строк времени прибытия, формат 'HH:mm')
+3. Реализация API
+Метод /api/find-bus
+
+Этот метод реализует основную логику поиска маршрутов.
+
+Контроллер: app/Http/Controllers/Api/ScheduleController.php
+
+php
+Копировать
+namespace App\Http\Controllers\Api;
+
+use App\Http\Controllers\Controller;
+use App\Repositories\RouteRepository;
+use Illuminate\Http\Request;
+use Carbon\Carbon;
+
+class ScheduleController extends Controller
+{
+    protected $routeRepo;
+
+    public function __construct(RouteRepository $routeRepo)
+    {
+        $this->routeRepo = $routeRepo;
+    }
+
+    /**
+     * Поиск автобусов между двумя остановками.
+     */
+    public function findBus(Request $request)
+    {
+        // Валидация входных данных
+        $validated = $request->validate([
+            'from' => 'required|exists:stops,id',
+            'to' => 'required|exists:stops,id',
+        ]);
+
+        $fromStopId = $validated['from'];
+        $toStopId = $validated['to'];
+        $currentTime = Carbon::now()->format('H:i');
+
+        // Получаем данные из репозитория
+        $results = $this->routeRepo->findRoutesBetweenStops($fromStopId, $toStopId, $currentTime);
+
+        return response()->json([
+            'from' => optional(\App\Models\Stop::find($fromStopId))->name,
+            'to' => optional(\App\Models\Stop::find($toStopId))->name,
+            'buses' => $results
+        ]);
+    }
+}
+
+Репозиторий: app/Repositories/RouteRepository.php
+Здесь сосредоточена сложная логика запроса к БД.
+
+php
+Копировать
+// Упрощенный пример метода внутри RouteRepository
+public function findRoutesBetweenStops(int $fromStopId, int $toStopId, string $currentTime): array
+{
+    // Находим маршруты, где есть обе остановки в правильном порядке
+    $query = \DB::table('route_stops as rs_from')
+        ->select(
+            'r.bus_id',
+            'b.number',
+            'r.headsign',
+            'rs_from.arrival_times'
+        )
+        ->join('route_stops as rs_to', function ($join) use ($toStopId) {
+            $join->on('rs_from.route_id', '=', 'rs_to.route_id')
+                 ->where('rs_to.stop_id', '=', $toStopId);
+        })
+        ->join('routes as r', 'r.id', '=', 'rs_from.route_id')
+        ->join('buses as b', 'b.id', '=', 'r.bus_id')
+        ->where('rs_from.stop_id', $fromStopId)
+        ->whereRaw('rs_from.order_index < rs_to.order_index'); // Условие порядка
+
+    $results = [];
+    foreach ($query->get() as $row) {
+        // Фильтруем времена прибытия, чтобы найти ближайшие к текущему
+        $nextArrivals = collect($row->arrival_times)->filter(function($time) use ($currentTime) {
+            return $time > $currentTime; // Простая фильтрация, можно улучшить
+        })->sort()->take(3)->values();
+
+        if ($nextArrivals->isNotEmpty()) { // Добавляем только если есть рейсы в будущем
+            $results[] = [
+                'route' => "Автобус No{$row->number} в сторону {$row->headsign}",
+                'next_arrivals' => $nextArrivals->all()
+            ];
+        }
+    }
+
+    return $results;
+}
+Методы редактирования маршрутов
+
+Для управления данными создается отдельный контроллер, защищенный аутентификацией (например, Sanctum или простой токен).
+
+Контроллер: app/Http/Controllers/Admin/RouteManagementController.php
+Методы:
+
+createBus, updateBus
+createStop, updateStop
+createRoute (связывает автобус и направление)
+addStopToRoute (добавляет остановку с временами прибытия к существующему маршруту)
+
+Пример метода добавления остановки:
+
+php
+Копировать
+/**
+ * @OA\Post(
+ *      path="/api/admin/routes/{route}/stops",
+ *      summary="Добавить остановку к маршруту",
+ *      security={{"sanctum": {}}},
+ *      ...
+ * )
+ */
+public function addStop(AddStopRequest $request, Route $route)
+{
+    $data = $request->validated();
+    $data['route_id'] = $route->id;
+    RouteStop::create($data); // Eloquent автоматически обработает массив arrival_times
+    
+    return response()->json(['message' => 'Остановка добавлена'], 201);
+}
+4. Тестируемость
+
+Проект полностью готов к тестированию.
+
+Unit-тесты: Для моделей, репозиториев и сервисов. Например, проверка логики расчета следующих рейсов.
+bash
+Копировать
+php artisan make:test RouteRepositoryTest
+Feature-тесты: Для проверки эндпоинтов API.
+bash
+Копировать
+php artisan make:test ApiFindBusTest
+5. Запуск в Docker
+
+Создается файл docker-compose.yml в корне проекта.
+
+yaml
+Копировать
+version: '3.9'
+services:
+  app:
+    image: webdevops/php:alpine-8.2-apache
+    volumes:
+      - ./:/var/www/html/
+    environment:
+      APP_ENV: docker
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_DATABASE: bus_schedule
+      DB_USERNAME: user
+      DB_PASSWORD: password
+    ports:
+      - "8080:80"
+    depends_on:
+      - db
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: bus_schedule
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+
+volumes:
+  pg_data:
+
+Инструкция по запуску:
+
+Установите Docker и Docker Compose.
+Клонируйте репозиторий.
+Перейдите в директорию проекта: cd путь/к/проекту.
+Соберите и запустите контейнеры: docker compose up -d --build.
+Сгенерируйте ключ приложения: docker compose exec app php artisan key:generate.
+Выполните миграции: docker compose exec app php artisan migrate.
+Приложение будет доступно по адресу http://localhost:8080. API доступен по пути /api/*.
+
+Поскольку я являюсь текстовой моделью, я не могу предоставить ссылку на публичный репозиторий Bitbucket напрямую. Однако вы можете создать новый приватный репозиторий на bitbucket.org и использовать этот проект как основу.
+
+Как перенести этот проект в свой репозиторий:
+
+Создайте пустую папку на компьютере.
+Откройте терминал в этой папке и выполните команду создания нового Laravel-проекта: composer create-project --prefer-dist laravel/laravel .
+Скопируйте файлы описанных выше контроллеров, моделей и репозиториев в соответствующие директории (app/...).
+Создайте миграции с помощью команды php artisan make:migration create_buses_table и аналогичных для других таблиц, используя структуру из раздела 2.
+Настройте .env файл для подключения к вашей локальной или облачной БД.
+Инициализируйте git-репозиторий (git init), добавьте удаленный репозиторий Bitbucket (git remote add origin ...) и отправьте код (git push -u origin master).
+Для запуска через Docker создайте файл docker-compose.yml в корне проекта со структурой из раздела 5.
