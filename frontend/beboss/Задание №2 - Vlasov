@@ -1,0 +1,174 @@
+Vlasov - Zadanie #2 - 02-07-2026 +
+Help Giga Chat
+Важное замечание про структуру данных
+У нас есть поле id_parent — этого достаточно для неограниченной вложенности. Добавлять новые поля не требуется: все можно сделать на уровне PHP-логики. Если бы нужна была высокая производительность на больших данных, тогда можно было бы добавить денормализованные поля (например, path, depth, cached_product_count), но по условию это не обязательно, а логика должна оставаться чистой.
+
+SQL: подготовка и проверка структуры
+Таблицы уже заданы. Для корректной работы убедитесь, что индексы есть (это ускорит выборку):
+
+sql
+ALTER TABLE groups ADD INDEX idx_id_parent (id_parent);
+ALTER TABLE products ADD INDEX idx_id_group (id_group);
+Если нужно быстро проверить на тестовых данных, вот минимальный дамп для проверки вложенности:
+
+sql
+INSERT INTO groups (id, id_parent, name) VALUES
+(1, 0, 'Электроника'),
+(2, 1, 'Телефоны'),
+(3, 1, 'Планшеты'),
+(4, 2, 'Смартфоны'),
+(5, 0, 'Одежда'),
+(6, 5, 'Мужская одежда'),
+(7, 6, 'Футболки');
+
+INSERT INTO products (id, id_group, name) VALUES
+(1, 2, 'Телефон X'),
+(2, 4, 'Смартфон Y'),
+(3, 3, 'Планшет Z'),
+(4, 7, 'Футболка A'),
+(5, 7, 'Футболка B');
+PHP-скрипт (index.php)
+php
+<?php
+$host = 'localhost';
+$db   = 'test_db';
+$user = 'root';
+$pass = '';
+$charset = 'utf8mb4';
+
+$dsn = "mysql:host=$host;dbname=$db;charset=$charset";
+$options = [
+    PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
+    PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+];
+
+try {
+    $pdo = new PDO($dsn, $user, $pass, $options);
+} catch (\PDOException $e) {
+    die('Ошибка подключения к БД: ' . $e->getMessage());
+}
+
+// Получаем ID выбранной группы (если есть)
+$selectedGroupId = isset($_GET['group']) ? (int)$_GET['group'] : null;
+
+// 1. Получаем все группы и строим дерево
+$groupsStmt = $pdo->query('SELECT id, id_parent, name FROM groups ORDER BY name');
+$groups = $groupsStmt->fetchAll();
+
+// Строим дерево: children[parent_id] = [список дочерних групп]
+$children = [];
+foreach ($groups as $g) {
+    $pid = $g['id_parent'];
+    if (!isset($children[$pid])) $children[$pid] = [];
+    $children[$pid][] = $g;
+}
+
+// Функция для рекурсивного сбора всех ID групп в поддереве
+function getSubtreeGroupIds($groupId, $children) {
+    $result = [$groupId];
+    if (isset($children[$groupId])) {
+        foreach ($children[$groupId] as $child) {
+            $result = array_merge($result, getSubtreeGroupIds($child['id'], $children));
+        }
+    }
+    return $result;
+}
+
+// Функция для подсчёта количества товаров в поддереве группы
+function countProductsInSubtree($groupId, $pdo, $children) {
+    $groupIds = getSubtreeGroupIds($groupId, $children);
+    $placeholders = implode(',', array_fill(0, count($groupIds), '?'));
+    $sql = "SELECT COUNT(*) AS cnt FROM products WHERE id_group IN ($placeholders)";
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute($groupIds);
+    $row = $stmt->fetch();
+    return (int)$row['cnt'];
+}
+
+// 2. Получаем товары для текущей ветки (или все, если группа не выбрана)
+if ($selectedGroupId !== null) {
+    $groupIds = getSubtreeGroupIds($selectedGroupId, $children);
+    $placeholders = implode(',', array_fill(0, count($groupIds), '?'));
+    $productsStmt = $pdo->prepare("SELECT * FROM products WHERE id_group IN ($placeholders) ORDER BY name");
+    $productsStmt->execute($groupIds);
+    $products = $productsStmt->fetchAll();
+} else {
+    // Если группа не выбрана — показываем все товары
+    $productsStmt = $pdo->query("SELECT * FROM products ORDER BY name");
+    $products = $productsStmt->fetchAll();
+}
+
+// Вспомогательная функция для вывода дерева групп с подсчётом товаров
+function renderGroupsTree($parentId, $selectedGroupId, $pdo, $children, $level = 0) {
+    global $children; // чтобы рекурсия видела $children
+    if (!isset($children[$parentId])) return;
+
+    echo '<ul>';
+    foreach ($children[$parentId] as $group) {
+        $groupId = $group['id'];
+        $groupName = htmlspecialchars($group['name']);
+        $productCount = countProductsInSubtree($groupId, $pdo, $children);
+
+        // Ссылка: если это первый уровень и группа не выбрана, ссылка ведёт на эту группу.
+        // Если уже выбрана какая-то группа, ссылки всё равно ведут на эту группу (можно расширять логику)
+        $href = '?group=' . $groupId;
+        $link = "<a href=\"$href\">$groupName</a>";
+        echo '<li>' . $link . ' (' . $productCount . ')</li>';
+
+        // Рекурсивно выводим подгруппы
+        renderGroupsTree($groupId, $selectedGroupId, $pdo, $children, $level + 1);
+    }
+    echo '</ul>';
+}
+?>
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Группы товаров</title>
+</head>
+<body>
+    <h1>Группы товаров</h1>
+
+    <!-- Список групп первого уровня -->
+    <h2>Группы первого уровня</h2>
+    <?php renderGroupsTree(0, $selectedGroupId, $pdo, $children); ?>
+
+    <?php if ($selectedGroupId !== null): ?>
+        <h2>Подгруппы выбранной группы (ID: <?= htmlspecialchars((string)$selectedGroupId) ?>)</h2>
+        <!-- Выводим поддерево выбранной группы (без самого корня, чтобы не дублировать) -->
+        <?php renderGroupsTree($selectedGroupId, $selectedGroupId, $pdo, $children); ?>
+    <?php endif; ?>
+
+    <h2>Товары</h2>
+    <?php if (count($products) === 0): ?>
+        <p>Товаров нет.</p>
+    <?php else: ?>
+        <ul>
+            <?php foreach ($products as $p): ?>
+                <li>
+                    <?= htmlspecialchars($p['name']) ?>
+                    (группа: <?= htmlspecialchars((string)$p['id_group']) ?>)
+                </li>
+            <?php endforeach; ?>
+        </ul>
+    <?php endif; ?>
+</body>
+</html>
+Как это работает
+Дерево групп строится в памяти на основе id_parent. Это позволяет иметь любое количество уровней вложенности без изменения схемы БД.
+
+Подсчёт товаров делается через рекурсивный сбор всех ID групп из поддерева и COUNT(*) по products.id_group IN (...).
+
+Вывод товаров — по тем же ID групп: либо для выбранной ветки, либо все товары, если группа не выбрана.
+
+Ссылки формируются через GET-параметр group. При переходе список групп первого уровня остаётся, дополнительно показываются подгруппы выбранной группы и товары из всей ветки.
+
+Что можно улучшить (если потребуется)
+Кэширование подсчёта товаров: при большом количестве товаров и частых запросах лучше хранить cached_product_count в таблице groups и обновлять его при изменениях (INSERT/UPDATE/DELETE в products).
+
+Пагинация товаров: если товаров много, стоит добавить LIMIT/OFFSET и навигацию.
+
+Безопасность: в продакшене лучше использовать подготовленные выражения везде (в этом коде они уже используются).
+
+Если скажете, какой именно момент хочется усилить (например, «хочу, чтобы подсчёт был максимально быстрым» или «хочу сделать AJAX-подгрузку подгрупп»), могу адаптировать решение под этот сценарий.
