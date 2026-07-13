@@ -1,0 +1,226 @@
+Для выполнения этого тестового задания потребуется создать простую структуру проекта, состоящую из HTML-страницы с формой и логикой на JavaScript (для AJAX), а также PHP-обработчика. 
+
+Ниже приведена пошаговая реализация.
+
+1. Структура файлов
+
+Создайте папку для проекта со следующей структурой:
+
+Копировать
+/backend-test-task
+├── index.html
+├── register.php
+├── logs/
+│   └── registration.log
+└── .gitignore
+
+Файл logs/registration.log создается автоматически при первом успешном или неуспешном запросе.
+
+2. Файл .gitignore
+
+Чтобы файлы логов не попадали в репозиторий GitHub, создайте файл .gitignore в корне проекта:
+
+Копировать
+# Папка с логами
+logs/
+
+# Локальные настройки редактора (опционально)
+.vscode/
+.idea/
+.DS_Store
+3. Frontend: форма и AJAX (index.html)
+
+Страница содержит форму, контейнеры для вывода ошибок и сообщений об успехе, а также скрипт на чистом JavaScript для отправки данных без перезагрузки страницы.
+
+html
+Копировать
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Регистрация</title>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 40px; }
+        form { max-width: 400px; margin: 0 auto; display: flex; flex-direction: column; gap: 15px; }
+        input { padding: 10px; font-size: 16px; }
+        button { padding: 10px; cursor: pointer; background-color: #007bff; color: white; border: none; }
+        .error-message { color: red; text-align: center; min-height: 20px; }
+        .success-message { color: green; text-align: center; font-weight: bold; }
+    </style>
+</head>
+<body>
+
+<h2 style="text-align: center;">Форма регистрации</h2>
+<div id="resultMessage" class="error-message"></div>
+
+<form id="registerForm">
+    <input type="text" name="first_name" placeholder="Имя" required>
+    <input type="text" name="last_name" placeholder="Фамилия" required>
+    <input type="email" name="email" placeholder="Email" required>
+    <input type="password" name="password" placeholder="Пароль" required>
+    <input type="password" name="password_confirm" placeholder="Повтор пароля" required>
+    <button type="submit">Зарегистрироваться</button>
+</form>
+
+<script>
+document.getElementById('registerForm').addEventListener('submit', function(e) {
+    e.preventDefault();
+    
+    // Очистка предыдущих сообщений
+    document.getElementById('resultMessage').innerText = '';
+    document.getElementById('resultMessage').className = 'error-message';
+
+    const formData = new FormData(this);
+    const data = {};
+    for (const [key, value] of formData.entries()) {
+        data[key] = value;
+    }
+
+    // *** Дублирующая валидация на клиенте ***
+    if (!data.email.includes('@')) {
+        showError('Некорректный формат email');
+        return;
+    }
+    if (data.password !== data.password_confirm) {
+        showError('Пароли не совпадают');
+        return;
+    }
+
+    fetch('register.php', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(data)
+    })
+    .then(response => response.json())
+    .then(result => {
+        if (result.success) {
+            // При успешной проверке скрываем форму
+            this.style.display = 'none';
+            document.getElementById('resultMessage').innerText = result.message;
+            document.getElementById('resultMessage').className = 'success-message';
+        } else {
+            showError(result.message);
+        }
+    })
+    .catch(error => {
+        console.error('Ошибка:', error);
+        showError('Ошибка сети или сервера');
+    });
+});
+
+function showError(message) {
+    const msgDiv = document.getElementById('resultMessage');
+    msgDiv.innerText = message;
+    msgDiv.className = 'error-message';
+}
+</script>
+
+</body>
+</html>
+4. Backend: обработчик на PHP (register.php)
+
+Скрипт принимает JSON, декодирует его, проводит серверную валидацию, проверяет наличие пользователя в жестко заданном массиве и записывает результат в лог-файл.
+
+php
+Копировать
+<?php
+// Устанавливаем заголовок ответа как JSON
+header('Content-Type: application/json; charset=utf-8');
+
+// Получаем сырые данные из тела запроса
+$json = file_get_contents('php://input');
+$data = json_decode($json, true);
+
+// Базовая проверка входящих данных
+if (!$data || !isset($data['email'], $data['password'], $data['password_confirm'])) {
+    echo json_encode(['success' => false, 'message' => 'Недостаточно данных']);
+    exit;
+}
+
+$email = trim($data['email']);
+$password = $data['password'];
+$passwordConfirm = $data['password_confirm'];
+$firstName = isset($data['first_name']) ? trim($data['first_name']) : '';
+$lastName = isset($data['last_name']) ? trim($data['last_name']) : '';
+
+// *** Серверная валидация ***
+if (strpos($email, '@') === false) {
+    logRegistration($email, "FAIL - Invalid email format");
+    echo json_encode(['success' => false, 'message' => 'Некорректный формат email']);
+    exit;
+}
+
+if ($password !== $passwordConfirm) {
+    logRegistration($email, "FAIL - Passwords do not match");
+    echo json_encode(['success' => false, 'message' => 'Пароли не совпадают']);
+    exit;
+}
+
+// Массив существующих пользователей (имитация базы данных)
+$existingUsers = [
+    ['id' => 1, 'email' => 'ivan.petrov@example.com', 'name' => 'Иван Петров'],
+    ['id' => 2, 'email' => 'maria.smirnova@example.com', 'name' => 'Мария Смирнова'],
+    ['id' => 3, 'email' => 'admin@test.local', 'name' => 'Администратор']
+];
+
+// Проверка наличия email в массиве
+foreach ($existingUsers as $user) {
+    if (strtolower($user['email']) === strtolower($email)) {
+        logRegistration($email, "FAIL - Email already exists");
+        echo json_encode(['success' => false, 'message' => 'Пользователь с таким email уже зарегистрирован']);
+        exit;
+    }
+}
+
+// Если все проверки пройдены
+logRegistration($email, "SUCCESS - New user registered ({$firstName} {$lastName})");
+echo json_encode([
+    'success' => true, 
+    'message' => 'Регистрация прошла успешно! Добро пожаловать.'
+]);
+exit;
+
+/**
+ * Запись результата в лог-файл
+ */
+function logRegistration(string $email, string $status): void
+{
+    $date = date('Y-m-d H:i:s');
+    $ip = $_SERVER['REMOTE_ADDR'] ?? 'unknown';
+    $entry = "[{$date}] IP: {$ip} | Email: {$email} | Status: {$status}\n";
+    
+    // Путь к файлу лога относительно скрипта
+    $logFile = __DIR__ . '/logs/registration.log';
+    
+    // Создаем директорию, если её нет
+    if (!is_dir(__DIR__ . '/logs')) {
+        mkdir(__DIR__ . '/logs', 0755, true);
+    }
+    
+    file_put_contents($logFile, $entry, FILE_APPEND | LOCK_EX);
+}
+?>
+Как это работает:
+Пользователь заполняет поля в браузере.
+При нажатии кнопки JS-код перехватывает событие, делает базовую проверку формата почты и совпадения паролей, после чего отправляет объект через fetch() на адрес register.php.
+PHP получает тело запроса, декодирует JSON и заново выполняет те же проверки (валидация должна быть дублирована на бэкенде ради безопасности).
+Скрипт проходит циклом по массиву $existingUsers. Если почта найдена — возвращает ошибку.
+Результат каждой попытки (успех или конкретная причина отказа) дописывается в файл logs/registration.log.
+В случае успеха фронтенд скрывает тег <form> методом this.style.display = 'none' и выводит зеленое сообщение над формой.
+Инструкция по загрузке в публичный репозиторий:
+Зарегистрируйте аккаунт на github.com, если у вас его еще нет.
+Нажмите кнопку New -> Create a new repository.
+Задайте имя репозитория (например, backend-form-task), выберите тип Public, поставьте галочку «Add a README file» и нажмите Create repository.
+На локальной машине откройте терминал в папке вашего проекта и выполните команды:
+bash
+Копировать
+git init
+git add .
+git commit -m "Initial commit: Registration form with AJAX and PHP validation"
+git branch -M main
+git remote add origin https://github.com/ВАШ_ЛОГИН/НАЗВАНИЕ_РЕПОЗИТОРИЯ.git
+git push -u origin main
+(При необходимости система попросит авторизоваться через ваш аккаунт GitHub).
+После завершения загрузки скопируйте ссылку на репозиторий вида https://github.com/ваш-логин/название-репозитория и передайте её в качестве результата.
