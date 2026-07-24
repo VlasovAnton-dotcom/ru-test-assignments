@@ -1,0 +1,114 @@
+Ниже — рабочий план и структура решения для тестового задания на ASP.NET Core + React с отправкой кода через RabbitMQ. Для email-confirmation в ASP.NET Core обычно используют подтверждение email и хранят/проверяют токен на сервере; для защиты от частых повторных отправок в ASP.NET Core есть встроенный rate limiting middleware, а локализацию можно сделать через встроенные механизмы globalization/localization. [learn.microsoft](https://learn.microsoft.com/en-us/aspnet/core/security/authentication/accconfirm?view=aspnetcore-10.0)
+
+## Предлагаемая архитектура
+
+- **Frontend:** React.
+- **Backend API:** ASP.NET Core Web API.
+- **Очередь:** RabbitMQ.
+- **Сервер отправки писем:** отдельное .NET Console App, которое слушает очередь и пишет в консоль сообщение вида `2023.04.10 18:30 test@example.com код: 1234`.  
+- **Поток:** пользователь вводит email → API валидирует и генерирует код → кладёт задачу в RabbitMQ → консольный consumer получает сообщение → пользователь вводит код → API проверяет код и показывает success/error. Подобный pub/sub и consumer-подход для .NET + RabbitMQ типовой. [dev](https://dev.to/gaurav-nandankar/getting-started-with-rabbitmq-pubsub-using-masstransit-in-net-52m5)
+
+## Логика API
+
+1. **POST `/api/register/start`** — принимает email.
+2. **Валидация:** проверка формата email, антиспам-ограничения, возможно captcha.
+3. **Генерация кода:** 4–6 цифр или UUID-токен, но для UX лучше короткий код.
+4. **Сохранение:** код, email, время жизни, статус `Pending`.
+5. **Публикация в RabbitMQ:** `{ email, code, createdAt, locale }`.
+6. **Ответ фронту:** вернуть `verificationRequired=true`.
+7. **POST `/api/register/confirm`** — email + code.
+8. **Проверка:** совпадение, срок действия, попытки, статус.
+9. **Успех:** создать пользователя / отметить email подтверждённым и показать страницу “всё хорошо”.
+10. **Ошибка:** вернуть понятное сообщение.
+
+## Что хранить
+
+Лучше разделить данные так:
+
+- **Users**: email, passwordHash, isEmailConfirmed.
+- **EmailVerificationCodes**: email, codeHash, expiresAt, attempts, usedAt, createdAt.
+- **Outbox/QueueMessageLog**: messageId, email, payload, status, retries.
+
+Если делать через RabbitMQ, я бы всё равно оставил в БД запись о коде и сроке жизни, потому что очередь — это канал доставки, а не источник истины. Для одноразового кода это практичнее и надёжнее.
+
+## Сервер отправки
+
+Console App на .NET Core:
+
+- Подключается к RabbitMQ.
+- Слушает очередь `email-verification`.
+- При получении сообщения выводит в консоль дату, email и код.
+- В реальном проекте вместо `Console.WriteLine` здесь будет SMTP/SendGrid/другой провайдер.
+
+Пример формата сообщения:
+- `2026.07.24 09:55 test@example.com код: 1234`
+
+## Защита от дудоса
+
+Минимум, который стоит показать в тестовом:
+
+- **Rate limiting** на endpoint старта регистрации. Это можно сделать встроенным middleware ASP.NET Core. [learn.microsoft](https://learn.microsoft.com/en-us/aspnet/core/performance/rate-limit?view=aspnetcore-10.0)
+- **Валидация email** на сервере и на клиенте.
+- **Ограничение повторной отправки**: например, не чаще 1 раза в 30–60 секунд на email/IP.
+- **Captcha** как опция, если хотите усилить антибот-защиту.
+- **Лимит попыток ввода кода**: например, 5 попыток, потом блокировка на время.
+
+## UI на React
+
+Экранов достаточно трёх:
+
+1. **Email form.**
+   - input email
+   - кнопка Continue
+   - client-side validation
+
+2. **Code form.**
+   - поле для кода
+   - кнопка Confirm
+   - кнопка Resend with timer
+
+3. **Success/Error page.**
+   - success: “All good”
+   - error: “Invalid code” / “Code expired”
+
+Для React вполне уместно использовать форму с валидацией email; типовой пример валидируемого email input на React описан в источнике по React Hook Form. [jasonwatmore](https://jasonwatmore.com/react-hook-form-7-email-validation-example)
+
+## Локализация
+
+Сразу заложите `en/ru`:
+
+- на фронте: словари `en.json`, `ru.json`;
+- на backend: ресурсные файлы `.resx` и middleware локализации ASP.NET Core. Это встроенный путь для локализации контента и культуры. [learn.microsoft](https://learn.microsoft.com/en-us/aspnet/core/fundamentals/localization?view=aspnetcore-10.0)
+
+## Как бы я сделал в тестовом
+
+Самый сильный вариант для оценки:
+
+- **React SPA**
+- **ASP.NET Core Web API**
+- **RabbitMQ**
+- **Console consumer**
+- **In-memory или SQL persistence для кода**
+- **Rate limiting**
+- **Localization en/ru**
+
+Такой вариант показывает, что вы понимаете HTTP, очереди, клиент-серверное взаимодействие, асинхронную обработку и защиту от злоупотреблений. Для email confirmation в ASP.NET Core также есть официальный путь через Identity и подтверждение email. [code-maze](https://code-maze.com/email-confirmation-aspnet-core-identity/)
+
+## Что показать на собеседовании
+
+С высокой вероятностью спросят:
+
+- почему выбрали RabbitMQ;
+- чем очередь лучше polling по БД;
+- как работает HTTP request/response;
+- где хранить код и почему;
+- как защититься от brute-force и spam;
+- чем отличаются synchronous и asynchronous flows;
+- что происходит при повторной отправке кода;
+- как обеспечить идемпотентность и TTL.
+
+Если хотите, я могу сразу подготовить:
+- структуру БД,
+- REST endpoints,
+- схему RabbitMQ,
+- и готовый скелет проекта для ASP.NET Core + React.
