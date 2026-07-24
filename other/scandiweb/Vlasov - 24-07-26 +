@@ -1,0 +1,40 @@
+The GraphQL endpoint you need is hosted in Scandiweb’s official GitHub repository for their junior developer assignment.[github]
+Repository and purpose
+•	Repository: scandiweb/junior-react-endpoint[github]
+•	Purpose: Provides a local GraphQL API that you’ll query from your “minimalistic storefront” React app during the assessment.[github]
+•	Important rule: You are not supposed to modify this endpoint code or submit it as part of your assessment.[github]
+How to start the endpoint
+Clone the repo and run:
+bash
+# 1. Install dependencies
+yarn install
+
+# 2. Build the project
+yarn build
+
+# 3. Start the GraphQL server
+yarn start
+After yarn start, the server usually runs on http://localhost:8080 (check the console output; the exact port is printed there).[github]
+Using the endpoint in your app
+In your React project, configure Apollo Client (or another GraphQL client) to point to the local URL, e.g.:
+js
+import { ApolloClient, InMemoryCache, gql } from '@apollo/client';
+
+const client = new ApolloClient({
+  uri: 'http://localhost:8080', // or the URL shown in your terminal
+  cache: new InMemoryCache(),
+});
+Then you can run queries like (example based on typical Scandiweb tasks):
+js
+const GET_PRODUCTS = gql`
+  query {
+    products {
+      id
+      name
+      price
+      image
+    }
+  }
+`;
+Exact schema (available queries/mutations) is defined in the endpoint repo; you can inspect the source or use a GraphQL playground (if enabled) at http://localhost:8080 once the server is running.[github]
+If you want, I can outline a minimal Apollo setup + example queries tailored to the usual Scandiweb storefront tasks (product list, product details, cart, etc.).
