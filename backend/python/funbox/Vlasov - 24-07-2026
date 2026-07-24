@@ -1,0 +1,127 @@
+## Решение задачи по разработке веб-приложения для учета ссылок
+
+### Архитектура решения
+
+**Технологии:**
+* Python 3.7+
+* Flask для создания API
+* Redis для хранения данных
+* PyTest для тестирования
+
+### Реализация API
+
+```python
+from flask import Flask, request, jsonify
+from redis import Redis
+import re
+import time
+from datetime import datetime
+
+app = Flask(__name__)
+redis_client = Redis(host='localhost', port=6379, db=0)
+
+# Регулярное выражение для извлечения домена
+DOMAIN_PATTERN = re.compile(
+    r'https?://([^/]+)')
+
+@app.route('/visited_links', methods=['POST'])
+def add_links():
+    data = request.json
+    links = data.get('links', [])
+    
+    for link in links:
+        domain = extract_domain(link)
+        timestamp = int(time.time())
+        # Сохраняем домен с timestamp
+        redis_client.sadd(f'domains:{timestamp}', domain)
+    
+    return jsonify({"status": "ok"})
+
+@app.route('/visited_domains', methods=['GET'])
+def get_domains():
+    from_time = request.args.get('from', type=int)
+    to_time = request.args.get('to', type=int)
+    
+    if not from_time or not to_time:
+        return jsonify({"status": "error", "message": "Missing parameters"}), 400
+    
+    domains = set()
+    # Собираем все уникальные домены за указанный период
+    for timestamp in range(from_time, to_time + 1):
+        domains.update(redis_client.smembers(f'domains:{timestamp}'))
+    
+    return jsonify({
+        "domains": list(domains),
+        "status": "ok"
+    })
+
+def extract_domain(url):
+    match = DOMAIN_PATTERN.match(url)
+    if match:
+        return match.group(1)
+    return url
+
+if __name__ == '__main__':
+    app.run(debug=True)
+```
+
+### Тестирование
+
+```python
+import pytest
+from main import app, redis_client
+
+@pytest.fixture
+def client():
+    app.config['TESTING'] = True
+    with app.test_client() as client:
+        yield client
+    # Очистка Redis после тестов
+    redis_client.flushdb()
+
+def test_add_links(client):
+    response = client.post('/visited_links', json={
+        "links": [
+            "https://ya.ru",
+            "https://google.com"
+        ]
+    })
+    assert response.json['status'] == 'ok'
+
+def test_get_domains(client):
+    # Предварительно добавляем данные
+    redis_client.sadd(f'domains:{int(time.time())}', 'ya.ru')
+    
+    response = client.get('/visited_domains', query_string={
+        'from': int(time.time()) - 100,
+        'to': int(time.time()) + 100
+    })
+    assert 'ya.ru' in response.json['domains']
+```
+
+### Инструкция по запуску
+
+1. Установите зависимости:
+```bash
+pip install Flask redis pytest
+```
+
+2. Запустите Redis сервер
+
+3. Запустите приложение:
+```bash
+python main.py
+```
+
+### Особенности реализации
+
+* **Хранение данных** в Redis осуществляется через множества (sets) для автоматического обеспечения уникальности доменов
+* **Извлечение домена** происходит с помощью регулярного выражения
+* **Временные метки** используются для группировки доменов по времени
+* **Обработка ошибок** реализована через проверку параметров запроса
+
+### Оптимизация
+
+* Для больших объемов данных можно использовать более сложные структуры хранения в Redis
+* Добавить кэширование результатов для часто запрашиваемых интервалов времени
+* Реализовать асинхронную обработку запросов для повышения производительности
