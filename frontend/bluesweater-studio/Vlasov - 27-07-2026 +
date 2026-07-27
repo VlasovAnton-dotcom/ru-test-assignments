@@ -1,0 +1,107 @@
+Вариант решения задачи - Власов - 27-07-2026 +
+Вот подробный план действий для реализации проекта.
+1. Генерация данных пользователей
+Для начала нужно сгенерировать массив из нескольких тысяч пользователей со случайными данными:
+typescriptКопировать
+enum Color {
+    RED = 'red',
+    GREEN = 'green',
+    BLUE = 'blue'
+}
+
+interface User {
+    color: Color;
+    name: string;
+    speed: number; // км/ч
+    time: number; // мс
+}
+Можно использовать библиотеку faker или написать простую функцию генерации на основе массива имен и цветов.
+2. Структура компонентов в React (Hooks)
+•	App.ts: главный компонент, отвечает за загрузку данных и управление состоянием.
+•	UserList.tsx: отображает список пользователей с пагинацией.
+•	UserItem.tsx: отдельный пользовательский элемент с аватаркой-шлемом.
+3. Реализация lazy load подгрузки
+Используем Intersection Observer API для отслеживания скролла до конца списка:
+tsxКопировать
+useEffect(() => {
+    const observer = new IntersectionObserver(
+        entries => {
+            if (entries[0].isIntersecting) {
+                fetchMoreUsers();
+            }
+        },
+        { threshold: 0.5 } // срабатывает при пересечении нижней границы экрана наполовину
+    );
+
+    const lastUserElementRef = ref.current?.lastChild;
+    if (lastUserElementRef) observer.observe(lastUserElementRef);
+
+    return () => {
+        if (lastUserElementRef) observer.unobserve(lastUserElementRef);
+    };
+}, [ref]);
+4. Использование JSS (@material-ui/styles)
+Создадим стили через хуки Material UI:
+tsxКопировать
+import { makeStyles } from '@material-ui/core';
+const useStyles = makeStyles({
+    userItem: {
+        display: 'flex',
+        alignItems: 'center',
+        padding: '8px 16px',
+        borderBottom: '1px solid #eaeaea',
+        transition: 'background-color 0.2s ease-in-out',
+        '&:hover': {
+            backgroundColor: '#f7f7ff'
+        },
+        '&.selected': {
+            backgroundColor: '#d9bfff' // фиолетовый цвет выделения
+        }
+    },
+    avatar: {
+        width: 40,
+        height: 40,
+        marginRight: 16,
+        flexShrink: 0
+    },
+    name: {
+        whiteSpace: 'nowrap',
+        overflow: 'hidden',
+        textOverflow: 'ellipsis', // многоточие при переполнении
+        maxWidth: 'calc(100% - 120px)'
+    }
+});
+5. Оптимизация производительности
+Чтобы приложение не тормозило при большом количестве элементов:
+•	Используй мемоизацию (React.memo) для компонента UserItem.
+•	Для анимации выравнивания шлемов можно применить CSS-переходы к контейнеру с фиксированной высотой для новых элементов.
+•	Избегай перерисовки всего списка — обновляй только те элементы, которые изменились.
+Пример структуры проекта
+Копировать
+/src
+├── App.tsx
+├── components/
+│   ├── Loader.tsx
+│   └── UserList.tsx
+│       └── UserItem.tsx
+├── hooks/
+│   └── useInfiniteScroll.tsx
+├── styles/
+│   └── theme.ts
+├── utils/
+│   └── generateUsers.ts
+└── index.tsx
+Публикация на GitHub Pages
+После завершения разработки выполни следующие шаги:
+1.	Создай репозиторий на GitHub.
+2.	Установи пакет gh-pages: npm install gh-pages --save-dev
+3.	Добавь скрипты в package.json:
+jsonКопировать
+"scripts": {
+  "predeploy": "npm run build",
+  "deploy": "gh-pages -d build"
+},
+"homepage": "https://<username>.github.io/<repo-name>"
+4.	Выполни команду npm run deploy. После этого проект будет доступен по адресу <username>.github.io/<repo-name>.
+Если тебе нужна помощь с реализацией какого-то конкретного момента или код ревью уже написанного решения — пиши, я помогу! 😉
+
