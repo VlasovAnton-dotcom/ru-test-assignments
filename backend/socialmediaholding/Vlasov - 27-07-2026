@@ -1,0 +1,358 @@
+Вариант решения - Vlasov - 27-07-2026 + 
+Для выполнения этого тестового задания я создам чистое, 
+расширяемое решение на PHP без фреймворков, 
+которое легко адаптировать под другие ресурсы (recipes, posts, users).
+
+## Решение
+
+Я создам структуру из трёх файлов:
+
+1. **`config.php`** — конфигурация и базовый класс API
+2. **`products.php`** — endpoint для работы с продуктами (iPhone)
+3. **`.htaccess`** — для красивых URL (опционально)
+
+### 1. Базовый класс API (`config.php`)
+
+```php
+<?php
+// config.php
+
+// Настройки
+define('DUMMYJSON_BASE_URL', 'https://dummyjson.com');
+define('CACHE_DIR', __DIR__ . '/cache');
+
+// Создаём директорию для кэша, если её нет
+if (!is_dir(CACHE_DIR)) {
+    mkdir(CACHE_DIR, 0755, true);
+}
+
+/**
+ * Базовый класс для CRUD-операций
+ * Можно адаптировать под любой ресурс: products, recipes, posts, users
+ */
+class ApiClient
+{
+    protected string $resource;
+    protected string $baseUrl;
+    
+    public function __construct(string $resource)
+    {
+        $this->resource = $resource;
+        $this->baseUrl = DUMMYJSON_BASE_URL . '/' . $resource;
+    }
+    
+    /**
+     * Получить все записи
+     */
+    public function getAll(): array
+    {
+        return $this->request('GET', $this->baseUrl);
+    }
+    
+    /**
+     * Получить одну запись по ID
+     */
+    public function getById(int $id): ?array
+    {
+        $data = $this->request('GET', "{$this->baseUrl}/{$id}");
+        return $data['error'] ?? $data;
+    }
+    
+    /**
+     * Создать новую запись
+     * DummyJSON: POST создаёт запись в их "базе"
+     */
+    public function create(array $data): array
+    {
+        return $this->request('POST', $this->baseUrl, $data);
+    }
+    
+    /**
+     * Обновить запись по ID
+     */
+    public function update(int $id, array $data): array
+    {
+        return $this->request('PUT', "{$this->baseUrl}/{$id}", $data);
+    }
+    
+    /**
+     * Удалить запись по ID
+     */
+    public function delete(int $id): array
+    {
+        return $this->request('DELETE', "{$this->baseUrl}/{$id}");
+    }
+    
+    /**
+     * Выполнить HTTP-запрос к DummyJSON API
+     */
+    protected function request(string $method, string $url, array $data = []): array
+    {
+        $cacheKey = md5($method . $url . json_encode($data));
+        $cacheFile = CACHE_DIR . '/' . $cacheKey . '.json';
+        
+        // Простой кэш на 5 минут (для GET запросов)
+        if ($method === 'GET' && file_exists($cacheFile) && (time() - filemtime($cacheFile) < 300)) {
+            return json_decode(file_get_contents($cacheFile), true);
+        }
+        
+        $ch = curl_init();
+        
+        $options = [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT => 10,
+        ];
+        
+        if ($method === 'POST' || $method === 'PUT') {
+            $options[CURLOPT_POSTFIELDS] = json_encode($data);
+            $options[CURLOPT_HTTPHEADER] = ['Content-Type: application/json'];
+        } elseif ($method === 'DELETE') {
+            $options[CURLOPT_CUSTOMREQUEST] = 'DELETE';
+        } elseif ($method === 'PUT') {
+            $options[CURLOPT_CUSTOMREQUEST] = 'PUT';
+        }
+        
+        // DummyJSON специфично: для PUT/DELETE нужно указать метод явно
+        if ($method === 'PUT') {
+            $options[CURLOPT_CUSTOMREQUEST] = 'PUT';
+        }
+        
+        curl_setopt_array($ch, $options);
+        curl_setopt($ch, CURLOPT_URL, $url);
+        
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $error = curl_error($ch);
+        
+        curl_close($ch);
+        
+        if ($error) {
+            $result = ['error' => $error];
+        } else {
+            $result = json_decode($response, true) ?? ['error' => 'Invalid JSON response'];
+            $result['http_code'] = $httpCode;
+        }
+        
+        // Кэшируем GET запросы
+        if ($method === 'GET') {
+            file_put_contents($cacheFile, json_encode($result));
+        }
+        
+        return $result;
+    }
+}
+
+/**
+ * Отправка JSON-ответа
+ */
+function jsonResponse(array $data, int $statusCode = 200): void
+{
+    http_response_code($statusCode);
+    header('Content-Type: application/json; charset=utf-8');
+    echo json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+/**
+ * Получение данных из запроса
+ */
+function getRequestData(): array
+{
+    $method = $_SERVER['REQUEST_METHOD'];
+    $data = [];
+    
+    if ($method === 'POST' || $method === 'PUT') {
+        $input = file_get_contents('php://input');
+        $data = json_decode($input, true) ?? $_POST;
+    }
+    
+    return $data;
+}
+```
+
+### 2. Endpoint для продуктов (`products.php`)
+
+```php
+<?php
+// products.php
+
+require_once 'config.php';
+
+// Инициализируем клиент для ресурса "products"
+$api = new ApiClient('products');
+
+$method = $_SERVER['REQUEST_METHOD'];
+$path = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
+
+// Получаем ID из URL, если есть (например: /products.php/123)
+$id = null;
+$pathParts = explode('/', trim($path, '/'));
+if (isset($pathParts [github](https://github.com/mevdschee/php-crud-api)) && is_numeric($pathParts [github](https://github.com/mevdschee/php-crud-api))) {
+    $id = (int)$pathParts [github](https://github.com/mevdschee/php-crud-api);
+}
+
+switch ($method) {
+    case 'GET':
+        if ($id !== null) {
+            // Получить один продукт по ID
+            $product = $api->getById($id);
+            if (isset($product['error'])) {
+                jsonResponse(['error' => 'Product not found', 'details' => $product], 404);
+            } else {
+                // Фильтрация только iPhone (если нужно)
+                if (stripos($product['title'] ?? '', 'iPhone') !== false) {
+                    jsonResponse($product);
+                } else {
+                    jsonResponse(['error' => 'Product is not iPhone'], 400);
+                }
+            }
+        } else {
+            // Получить все продукты и отфильтровать iPhone
+            $allProducts = $api->getAll();
+            $iPhones = array_filter($allProducts, function($product) {
+                return stripos($product['title'] ?? '', 'iPhone') !== false;
+            });
+            jsonResponse(['products' => array_values($iPhones), 'count' => count($iPhones)]);
+        }
+        break;
+        
+    case 'POST':
+        // Создать новый продукт
+        $data = getRequestData();
+        
+        // Валидация
+        if (empty($data['title']) || empty($data['price'])) {
+            jsonResponse(['error' => 'Title and price are required'], 400);
+        }
+        
+        // Создаём (DummyJSON вернёт созданный объект)
+        $created = $api->create($data);
+        
+        if (isset($created['error'])) {
+            jsonResponse(['error' => 'Failed to create product', 'details' => $created], 500);
+        } else {
+            jsonResponse(['message' => 'Product created', 'product' => $created], 201);
+        }
+        break;
+        
+    case 'PUT':
+        // Обновить продукт
+        if ($id === null) {
+            jsonResponse(['error' => 'Product ID is required'], 400);
+        }
+        
+        $data = getRequestData();
+        $updated = $api->update($id, $data);
+        
+        if (isset($updated['error'])) {
+            jsonResponse(['error' => 'Failed to update product', 'details' => $updated], 404);
+        } else {
+            jsonResponse(['message' => 'Product updated', 'product' => $updated]);
+        }
+        break;
+        
+    case 'DELETE':
+        // Удалить продукт
+        if ($id === null) {
+            jsonResponse(['error' => 'Product ID is required'], 400);
+        }
+        
+        $deleted = $api->delete($id);
+        
+        if (isset($deleted['error'])) {
+            jsonResponse(['error' => 'Failed to delete product', 'details' => $deleted], 404);
+        } else {
+            jsonResponse(['message' => 'Product deleted', 'product' => $deleted]);
+        }
+        break;
+        
+    default:
+        jsonResponse(['error' => 'Method not allowed'], 405);
+}
+```
+
+### 3. Адаптация под другие ресурсы
+
+Чтобы быстро адаптировать под `recipes`, `posts` или `users`, просто создайте новый файл:
+
+**`recipes.php`** (аналогично `products.php`):
+```php
+<?php
+require_once 'config.php';
+
+$api = new ApiClient('recipes');
+// ... остальной код аналогичен products.php
+```
+
+Или создайте универсальный роутер **`api.php`**:
+
+```php
+<?php
+// api.php - универсальный роутер
+
+require_once 'config.php';
+
+$path = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
+$pathParts = explode('/', trim($path, '/'));
+
+// Первый сегмент - ресурс (products, recipes, posts, users)
+$resource = $pathParts[0] ?? 'products';
+$id = isset($pathParts [github](https://github.com/mevdschee/php-crud-api)) && is_numeric($pathParts [github](https://github.com/mevdschee/php-crud-api)) ? (int)$pathParts [github](https://github.com/mevdschee/php-crud-api) : null;
+
+// Валидация ресурса
+$allowedResources = ['products', 'recipes', 'posts', 'users'];
+if (!in_array($resource, $allowedResources)) {
+    jsonResponse(['error' => 'Resource not found'], 404);
+}
+
+$api = new ApiClient($resource);
+$method = $_SERVER['REQUEST_METHOD'];
+$data = getRequestData();
+
+// Далее логика как в products.php, но без привязки к iPhone
+// Для iPhone можно добавить фильтр в GET запросе: ?filter=iphone
+```
+
+### 4. Примеры запросов
+
+```bash
+# Получить все iPhone
+curl http://localhost/products.php
+
+# Получить iPhone по ID
+curl http://localhost/products.php/1
+
+# Создать новый продукт
+curl -X POST http://localhost/products.php \
+  -H "Content-Type: application/json" \
+  -d '{"title":"iPhone 16","price":999,"description":"New iPhone"}'
+
+# Обновить продукт
+curl -X PUT http://localhost/products.php/1 \
+  -H "Content-Type: application/json" \
+  -d '{"price":899}'
+
+# Удалить продукт
+curl -X DELETE http://localhost/products.php/1
+```
+
+### 5. Тестирование в Postman/Swagger
+
+Как QA-инженер, вы можете протестировать API:
+
+- **GET** `/products.php` — 200 OK, массив iPhone
+- **GET** `/products.php/1` — 200 OK, объект продукта
+- **POST** `/products.php` — 201 Created
+- **PUT** `/products.php/1` — 200 OK
+- **DELETE** `/products.php/1` — 200 OK
+
+### Ключевые преимущества решения
+
+- **Единый класс `ApiClient`** — легко адаптировать под любой ресурс
+- **Чёткое разделение** — конфиг, логика, endpoint
+- **Кэширование** — снижает нагрузку на DummyJSON
+- **Валидация** — проверка входных данных
+- **RESTful** — стандартные HTTP-методы
+- **Расширяемость** — добавьте новый ресурс в 2 строки кода
+
+Хотите, чтобы я добавил unit-тесты (PHPUnit) или Swagger-документацию для этого API?
