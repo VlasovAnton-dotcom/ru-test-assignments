@@ -1,0 +1,147 @@
+Вариатн решения - Vlasov - 27-07-2026 +
+Для обеспечения максимального быстродействия и прямого доступа к элементам без линейного поиска по массиву, в конструкторе класса необходимо один раз выполнить обход входных данных. За это время строятся две вспомогательные структуры:
+
+Словарь id_to_item — обеспечивает 
+𝑂
+(
+1
+)
+O(1) доступ к любому объекту по его id.
+Словарь children_map — сопоставляет каждому parent_id список прямых дочерних элементов.
+
+Метод getAllParents при каждом вызове поднимается от целевого элемента вверх до корня, используя словарь для мгновенного получения родителя каждого узла. Это гарантирует минимальное количество операций (ровно одна на каждый уровень вложенности).
+
+Ниже представлена реализация класса с учетом всех требований:
+
+python
+Копировать
+class TreeStore:
+    def __init__(self, items):
+        # Сохраняем ссылку на исходный массив для getAll()
+        self._items = items
+        
+        # Словарь для O(1) доступа к элементу по id: {id: object}
+        self._id_to_item = {}
+        
+        # Словарь для хранения детей: {parent_id: [child_object_1, child_object_2, ...]}
+        self._children_map = {}
+        
+        for item in items:
+            item_id = item['id']
+            parent_id = item['parent']
+            
+            self._id_to_item[item_id] = item
+            
+            if parent_id not in self._children_map:
+                self._children_map[parent_id] = []
+            self._children_map[parent_id].append(item)
+
+    def getAll(self):
+        """Возвращает изначальный массив элементов."""
+        return self._items
+
+    def getItem(self, id):
+        """Возвращает сам объект элемента или None, если он не найден."""
+        return self._id_to_item.get(id)
+
+    def getChildren(self, id):
+        """
+        Возвращает массив прямых дочерних элементов.
+        Если у элемента нет детей, возвращает пустой список.
+        """
+        # Используем .get() чтобы избежать KeyError, 
+        # но ищем именно среди детей текущего ID, а не "root"
+        return self._children_map.get(id, [])
+
+    def getAllParents(self, id):
+        """
+        Возвращает массив из цепочки родительских элементов,
+        начиная от непосредственного родителя переданного элемента
+        и заканчивая корневым элементом.
+        Порядок важен: ближайший родитель идет первым.
+        """
+        path = []
+        current_item = self._id_to_item.get(id)
+        
+        # Поднимаемся вверх по дереву, пока есть текущий узел и у него определен родитель
+        while current_item is not None and current_item['parent'] != 'root':
+            parent_id = current_item['parent']
+            parent_item = self._id_to_item.get(parent_id)
+            
+            # Защита от разорванных ссылок (если родителя физически нет в массиве)
+            if parent_item is None:
+                break
+                
+            path.append(parent_item)
+            current_item = parent_item
+            
+        return path
+
+
+# --- Проверка на предоставленных исходных данных ---
+
+items = [
+    {"id": 1, "parent": "root"},
+    {"id": 2, "parent": 1, "type": "test"},
+    {"id": 3, "parent": 1, "type": "test"},
+    {"id": 4, "parent": 2, "type": "test"},
+    {"id": 5, "parent": 2, "type": "test"},
+    {"id": 6, "parent": 2, "type": "test"},
+    {"id": 7, "parent": 4, "type": None},
+    {"id": 8, "parent": 4, "type": None}
+]
+
+ts = TreeStore(items)
+
+print("ts.getAll():")
+print(ts.getAll())
+print("\nts.getItem(7):")
+print(ts.getItem(7))
+print("\nts.getChildren(4):")
+print(ts.getChildren(4))
+print("\nts.getChildren(5):")
+print(ts.getChildren(5))
+print("\nts.getAllParents(7):")
+print(ts.getAllParents(7))
+Результаты выполнения кода:
+ts.getAll() вернет весь исходный список объектов.
+ts.getItem(7) вернет {"id": 7, "parent": 4, "type": None}.
+ts.getChildren(4) вернет [{"id": 7, "parent": 4, "type": None}, {"id": 8, "parent": 4, "type": None}].
+ts.getChildren(5) вернет [].
+ts.getAllParents(7) вернет массив строго в требуемом порядке:
+python
+Копировать
+[
+    {"id": 4, "parent": 2, "type": "test"}, 
+    {"id": 2, "parent": 1, "type": "test"}, 
+    {"id": 1, "parent": "root"}
+]
+Оценка производительности:
+Конструктор: 
+𝑂
+(
+𝑁
+)
+O(N), где 
+𝑁
+N — количество элементов. Выполняется один полный проход по массиву.
+getAll(), getItem(): 
+𝑂
+(
+1
+)
+O(1).
+getChildren(): 
+𝑂
+(
+1
+)
+O(1) для получения ссылки на список (копирования списка не происходит). Итерация по возвращенному списку зависит от количества детей.
+getAllParents(): 
+𝑂
+(
+𝐻
+)
+O(H), где 
+𝐻
+H — высота дерева (глубина конкретного элемента). Операции ограничиваются только подъемом по цепочке родителей.
