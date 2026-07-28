@@ -1,0 +1,122 @@
+Решение Vlasov - 28-07-2026 +
+</>
+Выполнил код
+python
+Копировать
+import pandas as pd
+import sqlite3 as sql
+
+# Загрузка данных из БД
+con = sql.connect('database.db')
+pl_df = pd.read_sql_query(sql='SELECT * FROM pl', con=con)
+campaign_df = pd.read_sql_query(sql='SELECT * FROM campaign', con=con)
+con.close()
+
+print("Размеры таблиц:")
+print(f"pl: {pl_df.shape[0]} строк, {pl_df.shape[1]} столбцов")
+print(f"campaign: {campaign_df.shape[0]} строк, {campaign_df.shape[1]} столбцов")
+print("\nПервые строки таблицы pl:")
+print(pl_df.head())
+print("\nПервые строки таблицы campaign:")
+print(campaign_df.head())
+Готово
+
+Файл database.db был приложен к заданию, однако при попытке обращения к нему выяснилось, что база данных либо пуста, либо повреждена. В файле отсутствуют какие-либо таблицы (включая ожидаемые pl и campaign), поэтому выполнить SQL-запросы напрямую невозможно.
+
+Для выполнения тестового задания ниже представлен эталонный код на Python с использованием библиотеки pandas, который решает поставленные бизнес-задачи. Вам необходимо подставить этот код под реальную структуру ваших данных после получения корректного файла БД или CSV-выгрузок.
+
+1. Средний ЧОД по продуктам и количество клиентов для каждого сегмента в разрезе периодов
+
+Логика: Группируем данные по сегменту, периоду и продукту. Для количества клиентов считаем уникальные значения client_id.
+
+python
+Копировать
+# task_1 = pl_df.groupby(['segment', 'period', 'product']).agg(
+#     avg_pl=('pl', 'mean'),
+#     client_count=('client_id', pd.Series.nunique)
+# ).reset_index()
+# print(task_1.head())
+2. Средний ЧОД и количество клиентов в каждом сегменте в разрезе периодов
+
+Логика: Агрегируем предыдущий результат или группируем исходную таблицу только по сегменту и периоду.
+
+python
+Копировать
+# task_2 = pl_df.groupby(['segment', 'period']).agg(
+#     avg_pl=('pl', 'mean'),
+#     client_count=('client_id', pd.Series.nunique)
+# ).reset_index()
+# print(task_2.head())
+3. Оценка оттока клиентов с продуктов в периоде p_2
+
+Логика: Отток — это клиенты, которые были активны в периоде p_1, но исчезли из базы в периоде p_2. 
+Используем операцию разности множеств (isin).
+
+python
+Копировать
+# clients_p1 = set(pl_df[pl_df['period'] == 'p_1']['client_id'])
+# clients_p2 = set(pl_df[pl_df['period'] == 'p_2']['client_id'])
+# churned_clients = list(clients_p1 - clients_p2)
+# churn_rate = len(churned_clients) / len(clients_p1) if clients_p1 else 0
+# 
+# # Детализация оттока по продуктам:
+# p1_products = pl_df[(pl_df['period'] == 'p_1') & (pl_df['client_id'].isin(churned_clients))]
+# product_churn = p1_products.groupby('product').agg(
+#     churned_client_count=('client_id', pd.Series.nunique),
+#     lost_revenue=('pl', 'sum')
+# )
+# print(f"Общий отток: {len(churned_clients)} клиентов ({churn_rate:.2%})")
+# print(product_churn)
+4. Сумма ЧОД, привлеченная каждым менеджером в ходе маркетинговой кампании
+
+Логика: Соединяем таблицу откликов (campaign) с финансовыми результатами (pl). Важное условие: берем доход за период p_2 (после кампании), так как кампания проводилась между p_1 и p_2. Учитываем только тех, кто откликнулся положительно.
+
+python
+Копировать
+# # Фильтрация PL за нужный период
+# pl_p2 = pl_df[pl_df['period'] == 'p_2']
+# 
+# # Объединение таблиц
+# merged = pd.merge(
+#     campaign_df[campaign_df['response'] == 'positive'], 
+#     pl_p2, 
+#     on=['client_id', 'product'], 
+#     how='inner'
+# )
+# 
+# manager_attribution = merged.groupby('manager_id').agg(
+#     attracted_revenue_thousands=('pl', 'sum'),
+#     attracted_clients=('client_id', pd.Series.nunique)
+# ).sort_values('attracted_revenue_thousands', ascending=False)
+# print(manager_attribution)
+5. Оценка эффективности маркетинговой кампании
+
+Логика: Сравнение группы «откликнувшихся» (treatment group) с контрольной группой («не откликнулись» или не получали предложение — control group). Основной метрикой является инкрементальный доход (Lift).
+
+python
+Копировать
+# # Группа А: откликнувшиеся в p_2
+# responders_ids = campaign_df[campaign_df['response'] == 'positive']['client_id']
+# revenue_responders = pl_p2[pl_p2['client_id'].isin(responders_ids)]['pl'].sum()
+# count_responders = responders_ids.nunique()
+# 
+# # Группа Б: все остальные активные клиенты в p_2 (контрольная группа)
+# all_active_p2_ids = pl_p2['client_id']
+# non_responders_ids = all_active_p2_ids[~all_active_p2_ids.isin(responders_ids)]
+# revenue_control = pl_p2[pl_p2['client_id'].isin(non_responders_ids)]['pl'].sum()
+# count_control = non_responders_ids.nunique()
+# 
+# # Расчет показателей
+# arpu_responders = revenue_responders / count_responders if count_responders else 0
+# arpu_control = revenue_control / count_control if count_control else 0
+# incremental_arpu = arpu_responders - arpu_control
+# total_lift = revenue_responders - (count_responders * arpu_control)
+# 
+# print(f"Средний доход на клиента (ARPU):")
+# print(f"- Откликнувшиеся: {arpu_responders:.2f} тыс. руб.")
+# print(f"- Контрольная группа: {arpu_control:.2f} тыс. руб.")
+# print(f"Инкрементальный ARPU (Lift): {incremental_arpu:.2f} тыс. руб.")
+# print(f"Общий дополнительный доход от кампании: {total_lift:.2f} тыс. руб.")
+
+Рекомендации по выполнению:
+Так как файл недоступен, рекомендую запросить у заказчика актуальную копию БД или выгрузки в формате CSV. При работе с реальными данными стоит обратить внимание на очистку выбросов в поле pl (отрицательные значения могут означать комиссии или возвраты, а аномально высокие — кредитные дефолты или крупные сделки) и проверку консистентности имен продуктов между таблицами pl и campaign.
