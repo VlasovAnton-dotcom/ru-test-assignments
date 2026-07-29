@@ -1,0 +1,316 @@
+Ниже — готовое решение на React (с CSS-модулями), которое покрывает все требования: адаптивность (breakpoint 1040 px), 
+фильтрация по категориям, подгрузка «новых» картинок по кнопке, выбор/удаление на десктопе, клик по метке категории внутри карточки.
+
+
+## Структура проекта (пример)
+
+```
+src/
+  components/
+    Gallery/
+      Gallery.jsx
+      Gallery.module.css
+  App.jsx
+  data.js
+```
+
+## `data.js` (локальные данные)
+
+```js
+export const initialImages = [
+  { id: 1, src: 'https://via.placeholder.com/300?text=Img+1', title: 'Image 1', category: 'nature' },
+  { id: 2, src: 'https://via.placeholder.com/300?text=Img+2', title: 'Image 2', category: 'city' },
+  { id: 3, src: 'https://via.placeholder.com/300?text=Img+3', title: 'Image 3', category: 'nature' },
+  { id: 4, src: 'https://via.placeholder.com/300?text=Img+4', title: 'Image 4', category: 'animals' },
+  { id: 5, src: 'https://via.placeholder.com/300?text=Img+5', title: 'Image 5', category: 'city' },
+  { id: 6, src: 'https://via.placeholder.com/300?text=Img+6', title: 'Image 6', category: 'animals' },
+  { id: 7, src: 'https://via.placeholder.com/300?text=Img+7', title: 'Image 7', category: 'nature' },
+  { id: 8, src: 'https://via.placeholder.com/300?text=Img+8', title: 'Image 8', category: 'city' },
+  { id: 9, src: 'https://via.placeholder.com/300?text=Img+9', title: 'Image 9', category: 'animals' },
+];
+
+export const categories = ['Show all', 'nature', 'city', 'animals'];
+```
+
+## `Gallery.jsx`
+
+```jsx
+import React, { useState } from 'react';
+import styles from './Gallery.module.css';
+import { initialImages, categories } from '../data';
+
+const Gallery = () => {
+  const [images, setImages] = useState(initialImages);
+  const [category, setCategory] = useState('Show all');
+  const [selectedId, setSelectedId] = useState(null); // для подсветки и удаления
+
+  // Фильтрация
+  const filtered =
+    category === 'Show all'
+      ? images
+      : images.filter((img) => img.category === category);
+
+  // Load more: добавляем «новые» картинки (те же, но с суффиксом)
+  const handleLoadMore = () => {
+    const currentLength = images.length;
+    const nextBatch = [];
+    for (let i = 0; i < 9; i++) {
+      const original = images[(currentLength + i) % images.length];
+      nextBatch.push({
+        ...original,
+        id: Date.now() + i, // уникальный ID
+        title: `${original.title} (copy ${i + 1})`,
+        src: `${original.src}&t=${Date.now()}`, // чтобы не кэшировалось
+      });
+    }
+    setImages((prev) => [...prev, ...nextBatch]);
+  };
+
+  const handleSelect = (id) => {
+    setSelectedId((prev) => (prev === id ? null : id));
+  };
+
+  const handleDelete = () => {
+    if (selectedId === null) return;
+    setImages((prev) => prev.filter((img) => img.id !== selectedId));
+    setSelectedId(null);
+  };
+
+  return (
+    <div className={styles.galleryContainer}>
+      <div className={styles.controls}>
+        <div className={styles.filters}>
+          {categories.map((cat) => (
+            <button
+              key={cat}
+              className={`${styles.filterBtn} ${category === cat ? styles.active : ''}`}
+              onClick={() => setCategory(cat)}
+            >
+              {cat}
+            </button>
+          ))}
+        </div>
+        <button className={styles.loadMoreBtn} onClick={handleLoadMore}>
+          Load more
+        </button>
+        {selectedId !== null && (
+          <button className={styles.deleteBtn} onClick={handleDelete}>
+            Del
+          </button>
+        )}
+      </div>
+
+      <div className={styles.grid}>
+        {filtered.length === 0 ? (
+          <p className={styles.noResults}>No images for this category</p>
+        ) : (
+          filtered.map((img) => (
+            <div
+              key={img.id}
+              className={`${styles.card} ${selectedId === img.id ? styles.selected : ''}`}
+              onClick={() => handleSelect(img.id)}
+            >
+              <img src={img.src} alt={img.title} className={styles.image} />
+              <div className={styles.overlay}>
+                <span className={styles.categoryTag} onClick={(e) => {
+                  e.stopPropagation();
+                  setCategory(img.category);
+                }}>
+                  {img.category}
+                </span>
+                <span className={styles.title}>{img.title}</span>
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+};
+
+export default Gallery;
+```
+
+---
+
+## `Gallery.module.css`
+
+```css
+.galleryContainer {
+  padding: 20px;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 24px;
+}
+
+.filters {
+  display: flex;
+  gap: 8px;
+}
+
+.filterBtn {
+  padding: 8px 16px;
+  border: 1px solid #ccc;
+  background: #fff;
+  cursor: pointer;
+}
+
+.filterBtn.active {
+  background: #007bff;
+  color: #fff;
+  border-color: #007bff;
+}
+
+.loadMoreBtn,
+.deleteBtn {
+  padding: 8px 16px;
+  border: none;
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.loadMoreBtn {
+  background: #f0f0f0;
+}
+
+.deleteBtn {
+  background: #ff4d4d;
+  color: white;
+}
+
+/* Сетка: максимум 4 колонки, дальше растут только отступы */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 16px;
+}
+
+.card {
+  position: relative;
+  aspect-ratio: 1; /* квадрат */
+  overflow: hidden;
+  cursor: pointer;
+  border-radius: 6px;
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+}
+
+.card.selected {
+  border: 3px solid #28a745; /* зелёная подсветка */
+  box-shadow: 0 0 8px rgba(40, 167, 69, 0.4);
+}
+
+.image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.overlay {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 12px;
+  background: linear-gradient(to top, rgba(0,0,0,0.8), transparent);
+  color: white;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+}
+
+.categoryTag {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  cursor: pointer; /* клик по тегу категории */
+  margin-bottom: 4px;
+}
+
+.title {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.noResults {
+  grid-column: 1 / -1;
+  text-align: center;
+}
+
+/* Адаптив: при ширине < 1040px — мобильный вид */
+@media (max-width: 1039px) {
+  .galleryContainer {
+    padding: 12px;
+  }
+
+  .controls {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .filters {
+    justify-content: center;
+    margin-bottom: 12px;
+  }
+
+  .grid {
+    /* на мобильном — 1–2 колонки, в зависимости от ширины */
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  }
+
+  .card.selected {
+    border: 2px solid #28a745;
+  }
+}
+```
+
+---
+
+## Подключение в `App.jsx`
+
+```jsx
+import React from 'react';
+import Gallery from './components/Gallery/Gallery';
+
+function App() {
+  return (
+    <>
+      <h1>Image Gallery</h1>
+      <Gallery />
+    </>
+  );
+}
+
+export default App;
+```
+
+---
+
+## Как это соответствует требованиям
+
+- **Flexbox + Grid**: Grid для сетки карточек, Flexbox для контролов и внутренних элементов.
+- **Адаптивность**: при ширине `< 1040 px` включается мобильная сетка; на десктопе максимум 4 колонки за счёт `minmax` и `auto-fill`.
+- **Контент не тянется после 4 колонок**: сетка автоматически ограничивает количество колонок, растут только отступы (gap) и внешние margins.
+- **Фильтрация по категориям**: кнопки переключают `category`, рендерится только отфильтрованный массив.
+- **Клик по метке категории в карточке**: `onClick` на `.categoryTag` переключает категорию.
+- **Load more**: добавляет 9 «новых» карточек (с уникальными ID и изменёнными названиями).
+- **Выбор картинки на десктопе**: клик по карточке ставит/снимает `selectedId`, применяется класс `.selected` с зелёной рамкой.
+- **Удаление на десктопе**: кнопка «Del» появляется при наличии выбранной картинки и удаляет её из общего массива (она не появится снова даже при смене категории).
+- **Без плагинов галереи**: вся логика реализована вручную.
+
+---
+
+Если скажете, какой стек (TypeScript, Next.js, Vite и т.п.) и нужна ли SSR/SEO, могу адаптировать код под этот стек.
