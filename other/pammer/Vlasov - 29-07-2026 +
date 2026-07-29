@@ -1,0 +1,339 @@
+Задание 1: исправить WithProblemsTests, чтобы все 5 тестов прошли
+Поскольку я не вижу исходный код класса, привожу типовой шаблон того, что обычно нужно исправить в таких задачах:
+java
+ПереноситьСвернутьКопировать
+import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.*;
+
+public class WithProblemsTests {
+
+    @Test
+    void testSum() {
+        int result = Calculator.sum(2, 3);
+        assertEquals(5, result);
+    }
+
+    @Test
+    void testDivide() {
+        double result = Calculator.divide(10, 2);
+        assertEquals(5.0, result, 1e-9);
+    }
+
+    @Test
+    void testEmptyString() {
+        assertTrue(StringUtils.isEmpty(""));
+    }
+
+    @Test
+    void testNullString() {
+        assertTrue(StringUtils.isNullOrEmpty(null));
+    }
+
+    @Test
+    void testListSize() {
+        var list = List.of(1, 2, 3);
+        assertEquals(3, list.size());
+    }
+}
+Что обычно нужно сделать:
+•	добавить недостающие импорты (org.junit.jupiter.api.*, static org.junit.jupiter.api.Assertions.*);
+•	проверить, что методы Calculator и StringUtils существуют и имеют корректные сигнатуры;
+•	убрать опечатки в названиях методов/переменных;
+•	убедиться, что все тесты используют @Test и не выбрасывают не перехваченные исключения.
+Если пришлёшь исходный код WithProblemsTests (и классы, которые он использует), я дам точечные правки.
+________________________________________
+Задание 2: прочитать файл и проверить слово «аллоха» во второй строке
+java
+ПереноситьСвернутьКопировать
+import org.junit.jupiter.api.Test;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.List;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+class ReadFileTests {
+    @Test
+    void checkSecondLineContainsAlloha() throws Exception {
+        Path path = Path.of("src/test/resources/ReadFileTests.txt");
+        List<String> lines = Files.readAllLines(path);
+
+        // Проверка, что файл содержит хотя бы 2 строки
+        assertTrue(lines.size() >= 2, "Файл должен содержать минимум 2 строки");
+
+        String secondLine = lines.get(1); // 0-индексация: 1 — вторая строка
+        assertTrue(secondLine.contains("аллоха"), "Вторая строка должна содержать слово 'аллоха'");
+    }
+}
+Убедись, что файл ReadFileTests.txt лежит по пути src/test/resources/.
+________________________________________
+Задание 3: SQL-запрос для доли заказов с промокодами
+Файл: resources/Task3.sql
+sql
+ПереноситьСвернутьКопировать
+SELECT
+    COALESCE(
+        CAST(COUNT(DISTINCT CASE WHEN o.promocode_id IS NOT NULL THEN o.order_id END) AS DECIMAL)
+        / NULLIF(COUNT(DISTINCT o.order_id), 0),
+        0
+    ) AS share_with_promocodes
+FROM orders o;
+Пояснение:
+•	считаем количество заказов с не-NULL promocode_id;
+•	делим на общее количество заказов;
+•	NULLIF(..., 0) защищает от деления на ноль;
+•	COALESCE(..., 0) вернёт 0, если заказов вообще нет.
+________________________________________
+Задание 4: XPath и CSS-селектор для кнопки-стрелки на ya.ru
+Файл: resources/Task4.txt
+text
+ПереноситьСвернутьКопировать
+XPath: //button[contains(@class, "arrow")] | //span[contains(@class, "arrow")]
+CSS: button[class*="arrow"], span[class*="arrow"]
+Важно: у Яндекса верстка часто меняется, и точного класса «arrow» может не быть. В реальном задании нужно открыть страницу, посмотреть реальный класс/атрибут кнопки и подставить его. Например, если кнопка имеет data-testid="next-arrow", то:
+•	XPath: //*[@data-testid="next-arrow"]
+•	CSS: [data-testid="next-arrow"]
+________________________________________
+Задание 5*: иерархия роботов и демонстрация ООП
+Принципы ООП, которые будут продемонстрированы
+•	Абстракция: абстрактные классы и интерфейсы для общего поведения.
+•	Инкапсуляция: приватные поля и геттеры/сеттеры, скрытие деталей реализации заправки.
+•	Наследование: классы роботов наследуют базовый класс Robot.
+•	Полиморфизм: переопределение методов work() и refuel(); единый интерфейс для разных реализаций.
+Реализация
+Интерфейс топлива и типы топлива
+java
+ПереноситьСвернутьКопировать
+public enum FuelType {
+    ATOMIC,
+    INTERNAL_COMBUSTION,
+    ELECTRIC
+}
+java
+ПереноситьСвернутьКопировать
+public interface Fuel {
+    void consume();
+    boolean needsRefuel();
+    void refuel();
+}
+Конкретные реализации топлива
+java
+ПереноситьСвернутьКопировать
+class AtomicFuel implements Fuel {
+    private int yearsSinceRefuel;
+
+    public AtomicFuel() {
+        this.yearsSinceRefuel = 0;
+    }
+
+    @Override
+    public void consume() {
+        yearsSinceRefuel++;
+    }
+
+    @Override
+    public boolean needsRefuel() {
+        return yearsSinceRefuel >= 50;
+    }
+
+    @Override
+    public void refuel() {
+        if (yearsSinceRefuel < 50) {
+            throw new IllegalStateException("Атомный реактор не требует заправки раньше 50 лет");
+        }
+        yearsSinceRefuel = 0;
+        System.out.println("Атомный реактор перезапущен.");
+    }
+}
+java
+ПереноситьСвернутьКопировать
+class InternalCombustionFuel implements Fuel {
+    private double capacity;
+    private double current;
+
+    public InternalCombustionFuel(double capacity) {
+        this.capacity = capacity;
+        this.current = capacity;
+    }
+
+    @Override
+    public void consume() {
+        current -= 0.5; // условное потребление
+        if (current < 0) current = 0;
+    }
+
+    @Override
+    public boolean needsRefuel() {
+        return current <= 0.1 * capacity;
+    }
+
+    @Override
+    public void refuel() {
+        if (!needsRefuel()) {
+            throw new IllegalStateException("Бак не пуст, заправка не требуется");
+        }
+        current = capacity;
+        System.out.println("Бак заправлен топливом.");
+    }
+}
+java
+ПереноситьСвернутьКопировать
+class ElectricFuel implements Fuel {
+    private double charge; // от 0 до 100
+
+    public ElectricFuel(double charge) {
+        this.charge = charge;
+    }
+
+    @Override
+    public void consume() {
+        charge -= 2.0; // условное потребление
+        if (charge < 0) charge = 0;
+    }
+
+    @Override
+    public boolean needsRefuel() {
+        return charge <= 20.0;
+    }
+
+    @Override
+    public void refuel() {
+        if (!needsRefuel()) {
+            throw new IllegalStateException("Заряд выше 20%, заправка не требуется");
+        }
+        charge = 100.0;
+        System.out.println("Робот полностью заряжен.");
+    }
+}
+Базовый класс робота
+java
+ПереноситьСвернутьКопировать
+abstract class Robot {
+    protected final String name;
+    protected final FuelType fuelType;
+    protected Fuel fuel;
+
+    protected Robot(String name, FuelType fuelType, Fuel fuel) {
+        this.name = name;
+        this.fuelType = fuelType;
+        this.fuel = fuel;
+    }
+
+    // Абстрактное поведение работы
+    public abstract void work();
+
+    // Заправка: делегируем логику объекту Fuel
+    public void requestRefuel() {
+        if (fuel.needsRefuel()) {
+            fuel.refuel();
+        } else {
+            System.out.println(name + ": заправка не требуется.");
+        }
+    }
+
+    // Потребление энергии
+    protected void consumeEnergy() {
+        fuel.consume();
+    }
+}
+Роботы по назначению
+java
+ПереноситьСвернутьКопировать
+class CombatRobot extends Robot {
+    public CombatRobot(String name, FuelType fuelType, Fuel fuel) {
+        super(name, fuelType, fuel);
+    }
+
+    @Override
+    public void work() {
+        consumeEnergy();
+        System.out.println(name + " ведёт бой и стреляет.");
+    }
+}
+
+class WeldingRobot extends Robot {
+    public WeldingRobot(String name, FuelType fuelType, Fuel fuel) {
+        super(name, fuelType, fuel);
+    }
+
+    @Override
+    public void work() {
+        consumeEnergy();
+        System.out.println(name + " сваривает детали.");
+    }
+}
+
+class CookingRobot extends Robot {
+    public CookingRobot(String name, FuelType fuelType, Fuel fuel) {
+        super(name, fuelType, fuel);
+    }
+
+    @Override
+    public void work() {
+        consumeEnergy();
+        System.out.println(name + " готовит блюдо.");
+    }
+}
+Демонстрация: 9 роботов (3 назначения × 3 типа топлива)
+java
+ПереноситьСвернутьКопировать
+public class Main {
+    public static void main(String[] args) {
+        Robot[] robots = new Robot[9];
+
+        // Combat
+        robots[0] = new CombatRobot("Combat-A", FuelType.ATOMIC, new AtomicFuel());
+        robots[1] = new CombatRobot("Combat-IC", FuelType.INTERNAL_COMBUSTION, new InternalCombustionFuel(50.0));
+        robots[2] = new CombatRobot("Combat-E", FuelType.ELECTRIC, new ElectricFuel(100.0));
+
+        // Welding
+        robots[3] = new WeldingRobot("Weld-A", FuelType.ATOMIC, new AtomicFuel());
+        robots[4] = new WeldingRobot("Weld-IC", FuelType.INTERNAL_COMBUSTION, new InternalCombustionFuel(40.0));
+        robots[5] = new WeldingRobot("Weld-E", FuelType.ELECTRIC, new ElectricFuel(80.0));
+
+        // Cooking
+        robots[6] = new CookingRobot("Cook-A", FuelType.ATOMIC, new AtomicFuel());
+        robots[7] = new CookingRobot("Cook-IC", FuelType.INTERNAL_COMBUSTION, new InternalCombustionFuel(60.0));
+        robots[8] = new CookingRobot("Cook-E", FuelType.ELECTRIC, new ElectricFuel(90.0));
+
+        // Работа всех роботов
+        for (Robot r : robots) {
+            r.work();
+        }
+
+        // Имитация расхода и запрос заправки
+        for (int i = 0; i < 60; i++) {
+            for (Robot r : robots) {
+                r.consumeEnergy(); // ускоряем расход для демонстрации
+            }
+        }
+
+        System.out.println("--- Запрос заправки ---");
+        for (Robot r : robots) {
+            r.requestRefuel();
+        }
+
+        // Негативная проверка: попытка заправить, когда не нужно
+        System.out.println("--- Негативная проверка (заправка без необходимости) ---");
+        try {
+            robots[0].requestRefuel(); // у атомного робота ещё не прошло 50 «лет»
+        } catch (IllegalStateException e) {
+            System.out.println("Поймано ожидаемое исключение: " + e.getMessage());
+        }
+
+        // Негативная проверка: «не по назначению» — просто вызов work() у робота,
+        // но в рамках этой модели все роботы делают свою работу корректно.
+        // Чтобы показать «не по назначению», можно добавить метод, который явно
+        // нарушает назначение, например, боевой робот пытается сварить деталь.
+        System.out.println("--- Демонстрация использования не по назначению ---");
+        robots[0].work(); // боевой робот делает свою работу — это ОК
+        // Для демонстрации «не по назначению» можно добавить отдельный метод,
+        // например, combatRobot.weld(), который выбросит исключение.
+    }
+}
+Чтобы полностью закрыть требование «использован не по назначению», добавь в CombatRobot метод:
+java
+ПереноситьСвернутьКопировать
+public void weld() {
+    throw new IllegalStateException("Боевой робот не предназначен для сварки!");
+}
+И вызови его в main() для демонстрации.
