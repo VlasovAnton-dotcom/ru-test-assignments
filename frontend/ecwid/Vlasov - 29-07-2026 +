@@ -1,0 +1,212 @@
+Решение задачи - Vlasov - Help GigaChat - 29-07-2026 +
+Ниже представлена архитектура и базовая реализация тестового задания на Vue 3 + TypeScript с использованием Ecwid REST API. 
+Для выполнения задачи используется Composition API, vue-router для навигации (URL-синхронизация), Pinia для управления состоянием корзины и Tailwind CSS для стилизации.
+1. Настройка проекта и зависимостей
+Если вы используете Vite:
+bashКопировать
+npm create vite@latest ecwid-test -- --template vue-ts
+cd ecwid-test
+npm install
+npm install axios pinia @pinia/plugin-persistedstate vue-router@4 tailwindcss postcss autoprefixer
+npx tailwindcss init -p
+В tailwind.config.cjs укажите пути к вашим компонентам в секции content.
+2. Конфигурация доступа к Ecwid API
+Создайте файл констант. Демо-магазин из условия имеет ID 108362264 и токен public_RiNvjTVVzKLhFNWyzR5fNY68u1GMHLEs. Согласно документации Ecwid, публичный доступ требует передачи параметров token, lang и опционально storefrontUrl.
+src/api/config.ts
+typescriptКопировать
+export const STORE_ID = '108362264';
+export const TOKEN = 'public_RiNvjTVVzKLhFNWyzR5fNY68u1GMHLEs';
+export const BASE_URL = `https://app.ecwid.com/api/v3/${STORE_ID}`;
+export const DEFAULT_LANG = 'en';
+src/api/ecwid.ts
+typescriptКопировать
+import axios from 'axios';
+import { BASE_URL, TOKEN, DEFAULT_LANG } from './config';
+
+const client = axios.create({
+  baseURL: BASE_URL,
+});
+
+// Функция-обертка для добавления общих параметров запроса
+const apiRequest = async <T>(endpoint: string, params: Record<string, string | number> = {}) => {
+  try {
+    const response = await client.get<T>(endpoint, {
+      params: {
+        token: TOKEN,
+        lang: DEFAULT_LANG,
+        ...params,
+      },
+    });
+    return response.data;
+  } catch (error) {
+    console.error('Ecwid API Error:', error);
+    throw error;
+  }
+};
+
+export const getCategories = () => apiRequest<{ items: Category[] }>('/categories');
+export const getProducts = (categoryId?: number, searchQuery?: string) => {
+  // Если указан categoryId, ищем товары внутри категории. Иначе — все товары магазина.
+  const endpoint = categoryId ? `/products?category=${categoryId}` : '/products';
+  return apiRequest<{ items: Product[] }>(endpoint, searchQuery ? { q: searchQuery } : {});
+};
+export const getProductDetails = (productId: number) => apiRequest<Product>(`/products/${productId}`);
+Типы Category и Product следует описать согласно структуре ответа Ecwid.
+3. Управление состоянием (Pinia)
+Корзина должна сохраняться в localStorage между перезагрузками страницы.
+src/stores/cart.ts
+typescriptКопировать
+import { defineStore } from 'pinia';
+import { ref } from 'vue';
+import { usePersistedStatePlugin } from '@pinia/plugin-persistedstate';
+
+interface CartItem {
+  id: number;
+  name: string;
+  price: number;
+  quantity: number;
+  imageUrl?: string;
+}
+
+export const useCartStore = defineStore('cart', () => {
+  const items = ref<CartItem[]>([]);
+
+  const addToCart = (product: Omit<CartItem, 'quantity'>) => {
+    const existing = items.value.find(i => i.id === product.id);
+    if (existing) {
+      existing.quantity += 1;
+    } else {
+      items.value.push({ ...product, quantity: 1 });
+    }
+  };
+
+  const removeFromCart = (id: number) => {
+    items.value = items.value.filter(item => item.id !== id);
+  };
+
+  const increment = (id: number) => {
+    const item = items.value.find(i => i.id === id);
+    if (item) item.quantity++;
+  };
+
+  const decrement = (id: number) => {
+    const item = items.value.find(i => i.id === id);
+    if (item && item.quantity > 1) {
+      item.quantity--;
+    }
+  };
+
+  const totalItems = computed(() => items.value.reduce((sum, item) => sum + item.quantity, 0));
+  const totalPrice = computed(() => items.value.reduce((sum, item) => sum + item.price * item.quantity, 0).toFixed(2));
+  
+  const clearCart = () => {
+    items.value = [];
+  };
+
+  return { items, addToCart, removeFromCart, increment, decrement, totalItems, totalPrice, clearCart };
+}, {
+  persist: true // Включает плагин сохранения состояния
+});
+При инициализации приложения не забудьте использовать плагин:
+typescriptКопировать
+// main.ts
+import { createApp } from 'vue'
+import { createPinia } from 'pinia'
+import App from './App.vue'
+import router from './router'
+
+const app = createApp(App)
+const pinia = createPinia()
+pinia.use(usePersistedStatePlugin)
+app.use(pinia)
+app.use(router)
+app.mount('#app')
+4. Роутинг (Vue Router)
+Маршруты должны соответствовать страницам из ТЗ.
+src/router/index.ts
+typescriptКопировать
+import { createRouter, createWebHistory, RouteRecordRaw } from 'vue-router';
+import HomeView from '@/views/HomeView.vue';
+import CategoryView from '@/views/CategoryView.vue';
+import ProductView from '@/views/ProductView.vue';
+import CartView from '@/views/CartView.vue';
+
+const routes: Array<RouteRecordRaw> = [
+  { path: '/', component: HomeView },
+  { path: '/category/:id', component: CategoryView, props: true },
+  { path: '/product/:id', component: ProductView, props: true },
+  { path: '/cart', component: CartView },
+];
+
+export default createRouter({
+  history: createWebHistory(),
+  routes,
+});
+5. Компоненты и логика страниц
+Пример компонента товара со счетчиком корзины (например, в списке):
+htmlКопировать
+<!-- src/components/ProductCard.vue -->
+<script setup lang="ts">
+import type { Product } from '@/api/types';
+import { useCartStore } from '@/stores/cart';
+defineProps<{ product: Product }>();
+const cart = useCartStore();
+</script>
+
+<template>
+  <div class="border p-4 rounded-lg shadow hover:shadow-md transition">
+    <img :src="product.image?.url || 'placeholder.svg'" alt="" class="w-full h-48 object-cover mb-2" />
+    <h3 class="font-semibold text-lg">{{ product.name }}</h3>
+    <p class="text-gray-600 mb-2">${{ +(product.price ?? 0).toFixed(2) }}</p>
+    <button 
+      @click="cart.addToCart({ id: product.id, name: product.name, price: Number(product.price), imageUrl: product.image?.url })"
+      class="bg-blue-600 text-white px-3 py-1 rounded w-full hover:bg-blue-700"
+    >
+      Add to cart
+    </button>
+  </div>
+</template>
+Страница списка категорий и товаров (Главная): На главной странице (HomeView.vue) запрашиваются корневые категории (parent=0) и общие товары. При клике на категорию происходит переход по маршруту /category/:id.
+Страница деталей продукта: В хуке onMounted вызывается метод getProductDetails(route.params.id). Кнопка «Buy» вызывает cart.addToCart(...).
+Иконка корзины (глобальный лейаут): Размещается в App.vue над <router-view>.
+htmlКопировать
+<!-- src/App.vue -->
+<script setup lang="ts">
+import { RouterLink, RouterView } from 'vue-router';
+import { useCartStore } from '@/stores/cart';
+const cart = useCartStore();
+</script>
+
+<template>
+  <header class="flex justify-between items-center p-4 border-b bg-gray-50 sticky top-0 z-10">
+    <RouterLink to="/" class="text-xl font-bold">My Shop</RouterLink>
+    <RouterLink to="/cart" class="relative">
+      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-6 h-6">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M2.25 3h1.386c.51 0 .955.343 1.087.835l.383 1.437M7.5 14.25a3 3 0 00-3 3h15.75m-12.75-3h11.218c1.121-2.3 2.1-4.684 2.924-7.138a60.114 60.114 0 00-16.536-1.84M7.5 14.25L5.106 5.272M6 20.25a.75.75 0 11-1.5 0 .75.75 0 011.5 0zm12.75 0a.75.75 0 11-1.5 0 .75.75 0 011.5 0z" />
+      </svg>
+      <span v-if="cart.totalItems > 0" class="absolute -top-2 -right-2 bg-red-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center">
+        {{ cart.totalItems }}
+      </span>
+    </RouterLink>
+  </header>
+  <main class="container mx-auto p-4">
+    <RouterView />
+  </main>
+</template>
+Страница корзины: Отображает массив items из хранилища. Каждая строка содержит кнопку удаления (removeFromCart), кнопки изменения количества (increment / decrement) и итоговую сумму (totalPrice). Кнопка «Place order» сбрасывает состояние корзины (clearCart()) и показывает уведомление (через нативный alert или UI-библиотеку):
+javascriptКопировать
+const placeOrder = () => {
+  alert(`Thank you for your purchase! Total amount: $${cart.totalPrice}`);
+  cart.clearCart();
+  router.push('/');
+};
+6. Рекомендации по сдаче тестового задания
+Чтобы решение выглядело профессионально и соответствовало стандартам разработки Ecwid/Vue:
+1.	Обработка ошибок и состояний загрузки. Добавьте обработку .catch в запросы к API. Показывайте скелетоны (заглушки интерфейса) или спиннеры во время ожидания данных.
+2.	Оптимизация изображений. Используйте атрибут loading="lazy" для тегов <img> и задавайте фиксированные размеры контейнеров, чтобы избежать прыжков верстки (CLS).
+3.	Доступность (Accessibility). Убедитесь, что ссылки заменены на компоненты <RouterLink> (для правильной работы истории браузера), а интерактивные элементы имеют понятные подписи. Для иконки корзины лучше добавить aria-label="Shopping cart (3 items)".
+4.	Type Safety. Не используйте any. Опишите типы ответов от Ecwid API (интерфейсы Category, Product, Image). Это критически важно для позиции TypeScript-разработчика.
+5.	Адаптивность. Проверьте работу макета на мобильных устройствах. Использование сетки Tailwind (grid-cols-*) обычно решает эту задачу автоматически.
+6.	Чистота кода. Вынесите повторяющиеся блоки (карточка товара, элемент корзины) в отдельные SFC-компоненты.
+7.	Инструкция. В README.md репозитория кратко опишите стек, как запустить проект (npm install, npm run dev) и какие допущения были сделаны (например, использование демо-магазина без серверной части заказа).
+Готовый проект можно загрузить на GitHub или открыть напрямую в CodeSandbox, предварительно настроив там шаблон Vue + TypeScript.
