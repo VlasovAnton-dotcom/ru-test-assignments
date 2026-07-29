@@ -1,0 +1,370 @@
+Вариант решения - Vlasov - 29-07-2026
+FRONTEND – SMENA – VLASOV – 29-07-2026
+Ниже представлена полная архитектура и реализация тестового задания для frontend-разработчика. 
+Проект построен на стеке Vue 3 (Composition API), Vuetify 3, Pinia (как современная замена Vuex) и Axios.
+Структура проекта
+Копировать
+frontend/
+├── public/
+│   └── index.html
+├── src/
+│   ├── api/
+│   │   └── auth.js          # Настройка axios с перехватчиками токена
+│   ├── components/          # Переиспользуемые UI-компоненты
+│   ├── router/
+│   │   └── index.js         # Маршруты: /login, /register, /
+│   ├── store/
+│   │   └── user.js          # Состояние авторизации (Pinia)
+│   ├── views/
+│   │   ├── LoginView.vue    # Страница входа
+│   │   ├── RegisterView.vue # Страница регистрации
+│   │   └── HomeView.vue     # Главная страница (/about/)
+│   ├── App.vue              # Корневой компонент + v-app
+│   └── main.js              # Инициализация приложения
+├── tests/
+│   ├── unit/                # Jest тесты компонентов
+│   └── e2e/                 # Cypress сценарии
+├── jest.config.js
+├── package.json
+└── README.md
+________________________________________
+1. Установка зависимостей и настройка окружения
+В папке frontend выполнить:
+bashКопировать
+npm init vue@latest .
+# Выбрать: TypeScript - No, JSX - No, Vue Router - Yes, Pinia - Yes, Vitest/Jest - Yes, ESLint - Yes
+
+npm install axios vuetify@^3.x @mdi/font
+npm install --save-dev cypress
+2. Ядро приложения (API и хранилище)
+src/api/auth.js Настройка базового URL и автоматического добавления JWT-токена в заголовки.
+javascriptКопировать
+import axios from 'axios';
+import { useUserStore } from '@/store/user';
+
+const instance = axios.create({
+  baseURL: 'http://localhost:8080',
+});
+
+// Перехватчик запросов: добавляет Bearer токен
+instance.interceptors.request.use((config) => {
+  const userStore = useUserStore();
+  if (userStore.token) {
+    config.headers.Authorization = `Bearer ${userStore.token}`;
+  }
+  return config;
+});
+
+export default instance;
+src/store/user.js (Замена Vuex на Pinia)
+javascriptКопировать
+import { defineStore } from 'pinia';
+import api from '@/api/auth';
+
+export const useUserStore = defineStore('user', {
+  state: () => ({
+    token: localStorage.getItem('jwt_token') || null,
+    profile: JSON.parse(localStorage.getItem('user_profile')) || null,
+    isLoading: false,
+    error: null,
+  }),
+  getters: {
+    isAuthenticated: (state) => !!state.token,
+  },
+  actions: {
+    async login(credentials) {
+      this.isLoading = true;
+      this.error = null;
+      try {
+        const response = await api.post('/login/', credentials);
+        this.token = response.data.token;
+        localStorage.setItem('jwt_token', this.token);
+        // После логина сразу запрашиваем профиль
+        await this.fetchProfile();
+      } catch (err) {
+        this.error = err.response?.data?.error || 'Ошибка сети';
+        throw err;
+      } finally {
+        this.isLoading = false;
+      }
+    },
+    async register(data) {
+      this.isLoading = true;
+      this.error = null;
+      try {
+        await api.post('/register/', data);
+      } catch (err) {
+        this.error = err.response?.data?.message || 'Ошибка сети';
+        throw err;
+      } finally {
+        this.isLoading = false;
+      }
+    },
+    async fetchProfile() {
+      if (!this.token) return;
+      try {
+        const response = await api.get('/about/');
+        this.profile = response.data;
+        localStorage.setItem('user_profile', JSON.stringify(this.profile));
+      } catch (err) {
+        this.profile = null;
+        localStorage.removeItem('user_profile');
+        if (err.response?.status === 401) {
+          this.logout();
+        }
+      }
+    },
+    logout() {
+      this.token = null;
+      this.profile = null;
+      localStorage.removeItem('jwt_token');
+      localStorage.removeItem('user_profile');
+    },
+  },
+});
+3. Роутинг (Vue Router)
+src/router/index.js
+javascriptКопировать
+import { createRouter, createWebHistory } from 'vue-router';
+import HomeView from '@/views/HomeView.vue';
+import LoginView from '@/views/LoginView.vue';
+import RegisterView from '@/views/RegisterView.vue';
+import { useUserStore } from '@/store/user';
+
+const routes = [
+  { path: '/', name: 'home', component: HomeView, meta: { requiresAuth: true } },
+  { path: '/login', name: 'login', component: LoginView },
+  { path: '/register', name: 'register', component: RegisterView },
+];
+
+const router = createRouter({
+  history: createWebHistory(import.meta.env.BASE_URL),
+  routes,
+});
+
+router.beforeEach((to, from, next) => {
+  const userStore = useUserStore();
+  if (to.meta.requiresAuth && !userStore.isAuthenticated) {
+    next({ name: 'login' });
+  } else if ((to.name === 'login' || to.name === 'register') && userStore.isAuthenticated) {
+    next({ name: 'home' });
+  } else {
+    next();
+  }
+});
+
+export default router;
+4. Реализация страниц (Views)
+Для всех форм используется <v-form> из Vuetify с двусторонней привязкой (v-model) и встроенной валидацией через правила rules.
+src/views/LoginView.vue
+htmlКопировать
+<template>
+  <v-container class="fill-height">
+    <v-responsive class="d-flex align-center text-center fill-height">
+      <v-card width="400" class="mx-auto mt-5">
+        <v-toolbar color="primary">Вход</v-toolbar>
+        <v-card-text>
+          <v-form ref="form" v-model="valid" @submit.prevent="handleSubmit">
+            <v-text-field 
+              label="Имя пользователя" 
+              v-model="username"
+              :rules="[v => !!v || 'Поле обязательно']"
+            ></v-text-field>
+            <v-text-field 
+              type="password" 
+              label="Пароль" 
+              v-model="password"
+              :rules="[v => !!v || 'Поле обязательно']"
+            ></v-text-field>
+            <div class="text-red mt-2">{{ error }}</div>
+            <v-btn block type="submit" color="success" :loading="isLoading" class="mt-4">Войти</v-btn>
+          </v-form>
+        </v-card-text>
+        <v-card-actions>
+          <v-btn variant="text" block to="/register">Нет аккаунта? Зарегистрироваться</v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-responsive>
+  </v-container>
+</template>
+
+<script setup>
+import { ref } from 'vue';
+import { useRouter } from 'vue-router';
+import { useUserStore } from '@/store/user';
+
+const username = ref('');
+const password = ref('');
+const valid = ref(false);
+const isLoading = ref(false);
+const error = ref(null);
+const form = ref(null);
+const router = useRouter();
+const userStore = useUserStore();
+
+async function handleSubmit() {
+  const { valid: isFormValid } = await form.value.validate();
+  if (!isFormValid) return;
+  
+  isLoading.value = true;
+  error.value = null;
+  try {
+    await userStore.login({ username: username.value, password: password.value });
+    router.push('/');
+  } catch {
+    // Ошибка уже записана в стор
+  } finally {
+    isLoading.value = false;
+  }
+}
+</script>
+Страница RegisterView.vue идентична по структуре, но вызывает метод userStore.register().
+src/views/HomeView.vue
+htmlКопировать
+<template>
+  <v-container class="fill-height">
+    <v-responsive class="d-flex align-center justify-center text-center fill-height">
+      <v-card v-if="profile" max-width="500" class="mx-auto">
+        <v-img :src="profile.avatar" height="200px" cover></v-img>
+        <v-card-item>
+          <v-card-title>{{ profile.username }}</v-card-title>
+          <v-card-subtitle>ID: {{ profile.id }}</v-card-subtitle>
+        </v-card-item>
+        <v-card-text>
+          <p>{{ profile.about }}</p>
+        </v-card-text>
+        <v-card-actions>
+          <v-btn block color="error" @click="logout">Выйти</v-btn>
+        </v-card-actions>
+      </v-card>
+      <div v-else>
+        <v-progress-circular indeterminate />
+      </div>
+    </v-responsive>
+  </v-container>
+</template>
+
+<script setup>
+import { onMounted } from 'vue';
+import { useRouter } from 'vue-router';
+import { useUserStore } from '@/store/user';
+
+const router = useRouter();
+const userStore = useUserStore();
+const profile = computed(() => userStore.profile);
+
+onMounted(() => {
+  userStore.fetchProfile();
+});
+
+function logout() {
+  userStore.logout();
+  router.push('/login');
+}
+</script>
+5. Точка входа
+src/main.js
+javascriptКопировать
+import { createApp } from 'vue'
+import App from './App.vue'
+import router from './router'
+import { createPinia } from 'pinia'
+import 'vuetify/styles'
+import { createVuetify } from 'vuetify'
+import * as components from 'vuetify/components'
+import * as directives from 'vuetify/directives'
+
+const vuetify = createVuetify({
+  components,
+  directives,
+})
+
+const app = createApp(App)
+app.use(createPinia())
+app.use(router)
+app.use(vuetify)
+app.mount('#app')
+6. Тестирование
+Юнит-тесты (Jest): Пример теста для компонента формы (проверка блокировки кнопки при невалидных данных):
+javascriptКопировать
+// Пример для LoginView.spec.js
+import { mount } from '@vue/test-utils';
+import LoginView from '@/views/LoginView.vue';
+import { createTestingPinia } from '@pinia/testing';
+import { afterEach, describe, expect, test, vi } from 'vitest';
+import { setActivePinia } from 'pinia';
+
+describe('LoginView', () => {
+  let wrapper;
+  const mockPush = vi.fn();
+
+  beforeEach(() => {
+    setActivePinia(createTestingPinia());
+    wrapper = mount(LoginView, {
+      global: {
+        mocks: {
+          $router: { push: mockPush }
+        }
+      }
+    });
+  });
+
+  afterEach(() => {
+    wrapper.unmount();
+  });
+
+  test('кнопка "Войти" должна быть disabled без заполнения полей', async () => {
+    const button = wrapper.find('[type="submit"]');
+    expect(button.attributes('disabled')).toBeDefined();
+    
+    await wrapper.find('input[label="Имя пользователя"]').setValue('test');
+    await wrapper.find('input[label="Пароль"]').setValue('pass');
+    await wrapper.vm.$nextTick();
+    
+    expect(button.attributes('disabled')).toBeUndefined();
+  });
+});
+E2E-тесты (Cypress): Сценарий успешной регистрации и входа:
+javascriptКопировать
+// cypress/e2e/auth.cy.js
+describe('Registration and Login flow', () => {
+  it('should register a new user and redirect to home', () => {
+    cy.visit('/register');
+    cy.get('input[label="Имя пользователя"]').type('cypress_user');
+    cy.get('input[label="Пароль"]').type('StrongPass123');
+    cy.contains('Зарегистрироваться').click();
+    
+    cy.url().should('include', '/');
+    cy.contains('cypress_user').should('be.visible');
+  });
+
+  it('should not allow duplicate registration', () => {
+    cy.visit('/register');
+    cy.get('input[label="Имя пользователя"]').type('existing_user'); // имя admin или user из seed бэкенда
+    cy.get('input[label="Пароль"]').type('123');
+    cy.contains('Зарегистрироваться').click();
+    cy.contains('Пользователь с таким именем уже зарегистрирован').should('be.visible');
+  });
+});
+7. Инструкция по запуску (для README.md репозитория)
+1.	Убедитесь, что запущен backend-сервер (node app.js), который доступен по адресу http://localhost:8080.
+2.	В папке frontend выполните установку зависимостей:
+bashКопировать
+npm install
+3.	Запустите локальный сервер разработки:
+bashКопировать
+npm run dev
+4.	Приложение будет доступно по адресу http://localhost:5173.
+5.	Для запуска тестов:
+bashКопировать
+npm run test:unit       # Jest
+npx cypress open        # Cypress GUI
+6.	Для сборки production-версии:
+bashКопировать
+npm run build
+Рекомендации по улучшению решения:
+•	Добавить обработку истечения срока действия токена (refresh tokens).
+•	Реализовать глобальное уведомление об ошибках сети (Snackbar во App.vue).
+•	Использовать ленивую загрузку маршрутов (defineAsyncComponent) для ускорения старта SPA.
+•	Добавить защиту от CSRF, если планируется расширение функционала сессий.
+
