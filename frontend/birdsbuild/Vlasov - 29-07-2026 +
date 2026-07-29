@@ -1,0 +1,192 @@
+Решение задачи - Власов - 29-07-2026
+Help GigaChat
+Ниже представлена подробная архитектура и план реализации тестового задания. Поскольку у меня нет доступа к Figma-макету по ссылке, верстка выполнена на основе стандартных требований к подобным интерфейсам (карточки в сетке, шапка с фильтрами) без использования CSS-фреймворков.
+1. Стек технологий и структура проекта
+•	Фреймворк: Vue 3 + Composition API + <script setup>
+•	Язык: TypeScript
+•	Сборка: Vite (стандарт для Nuxt 3)
+•	Менеджер состояний: Pinia
+•	Роутинг: Файловый роутинг Nuxt (pages/)
+•	Стилизация: SCSS-модули или тег <style scoped> внутри компонентов (для строгой изоляции стилей).
+Структура папок:
+Копировать
+src/
+├── assets/          # Изображения товаров (фейковые)
+├── components/
+│   └── OfferCard.vue# Компонент карточки предложения
+├── composables/     # Логика поиска, сортировки, переключения табов
+│   └── useFilters.ts
+├── pages/
+│   ├── index.vue    # Склад (стартовая страница /warehouse)
+│   ├── deals.vue    # Сделки (/deals)
+│   └── favorites.vue# Избранное (/favorites)
+├── stores/
+│   ├── warehouse.ts # Состояние склада
+│   ├── deals.ts     # Состояние сделок
+│   └── favorites.ts # Состояние избранного
+└── types/
+    └── index.d.ts   # Интерфейс IOffer
+2. Типизация данных (types/index.d.ts)
+typescriptКопировать
+export interface IOffer {
+  id: string;
+  imageUrl: string; // путь до файла в /assets/images
+  type: 'auction' | 'direct'; 
+  title: string;
+  city: string;
+  seller: string;
+  category: string;
+  description: string;
+  price: number;
+  quantity: number;
+}
+3. Менеджер состояний (Pinia)
+Для каждой страницы создается отдельный стор. Это позволяет изолировать логику и легко манипулировать данными при переходе между страницами.
+Пример стора stores/favorites.ts:
+typescriptКопировать
+import { defineStore } from 'pinia'
+import { IOffer } from '@/types'
+import { ref } from 'vue'
+
+export const useFavoritesStore = defineStore('favorites', () => {
+  const items = ref<IOffer[]>([])
+
+  function addToFavorites(offer: IOffer) {
+    if (!items.value.find(i => i.id === offer.id)) {
+      items.value.push(offer)
+    }
+  }
+  
+  function removeFromFavorites(id: string) {
+    items.value = items.value.filter(i => i.id !== id)
+  }
+
+  return { items, addToFavorites, removeFromFavorites }
+})
+Аналогичные сторы создаются для warehouse (содержит исходный массив из JSON) и deals. Для оплаты в сторе deals можно добавить поле paidIds: Set<string>.
+4. Компоненты
+App.vue (Основной шаблон приложения)
+Содержит глобальную навигацию. Чтобы избежать перезагрузки страницы, ссылки реализуются через компонент <NuxtLink>.
+htmlКопировать
+<template>
+  <header class="app-header">
+    <nav>
+      <NuxtLink to="/">Склад</NuxtLink>
+      <NuxtLink to="/deals">Сделки</NuxtLink>
+      <NuxtLink to="/favorites">Избранное</NuxtLink>
+    </nav>
+  </header>
+  <main>
+    <slot /> <!-- Сюда будет монтироваться текущая страница -->
+  </main>
+</template>
+
+<script setup lang="ts">
+// Глобальные стили здесь не используются, только базовые для header
+</script>
+OfferCard.vue
+Принимает пропсы типа IOffer и эмиты событий для кнопок действий. Использование $emit гарантирует односторонний поток данных от родителя к ребенку.
+htmlКопировать
+<template>
+  <div class="card">
+    <img :src="imageUrl" alt="" class="card__image" />
+    <span :class="['card__type', `card__type--${type}`]">
+      {{ type === 'auction' ? 'Аукцион' : 'Прямые продажи' }}
+    </span>
+    <h3 class="card__title">{{ title }}</h3>
+    <p class="card__meta">{{ city }} • {{ seller }}</p>
+    <p class="card__desc">{{ description }}</p>
+    <div class="card__footer">
+      <span class="card__price">{{ formatPrice(price) }} ₽</span>
+      <span class="card__qty">Кол-во: {{ quantity }}</span>
+      <div class="card__actions">
+        <button @click="$emit('add-to-fav')">В избранное</button>
+        <button v-if="showAddToDeals" @click="$emit('add-to-deals')">В сделки</button>
+        <button v-else-if="isPaidDisabled" disabled>Оплачено</button>
+        <button v-else @click="$emit('pay')">Оплатить</button>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { computed } from 'vue'
+import { IOffer } from '@/types'
+
+defineProps<{ offer: IOffer }>()
+defineEmits(['add-to-fav', 'add-to-deals', 'pay'])
+
+const isPaidDisabled = computed(() => {
+  // Логика блокировки кнопки "Оплачено" передается через props.isPaid или проверяется в родителе
+  return false 
+})
+
+const showAddToDeals = computed(() => true) // Управляется родителем
+
+function formatPrice(val: number): string {
+  return val.toLocaleString()
+}
+</script>
+5. Реализация функционала по страницам
+Страница «Склад» (pages/index.vue)
+•	Данные: Загружает фейковый JSON (массив IOffer[]) локально или через useAsyncData (если бы был бэкенд). В данном случае достаточно импортировать статичный файл .json.
+•	Поиск: Вычисляемое свойство (computed), которое фильтрует массив предложений по строке поиска (регистронезависимый includes).
+•	Сортировка: Второе вычисляемое свойство, накладывающееся поверх результата поиска и фильтрующее по полю type.
+•	Действия: При клике на кнопку вызываются методы соответствующих Pinia-сторов (useWarehouseStore, useFavoritesStore, useDealsStore), которые перемещают объект предложения из одного массива в другой.
+Страница «Сделки» (pages/deals.vue)
+•	Источник данных: Массив из useDealsStore().
+•	Особенность карточек: Пропсы компонента OfferCard дополняются флагом состояния оплаты. Если ID предложения есть в списке оплаченных (в сторе), кнопка меняется на заблокированную «Оплачено». Иначе отображается «Оплатить», по клику на которую ID добавляется в список оплаченных.
+Страница «Избранное» (pages/favorites.vue)
+•	Источник данных: Массив из useFavoritesStore().
+•	Действия: Аналогично сделкам, но кнопки ведут либо в раздел «Сделки» (перенос объекта), либо вызывают оплату напрямую.
+6. Общие утилиты (composables/useFilters.ts)
+Чтобы не дублировать логику поиска и сортировки на трех страницах, она выносится в композабл:
+typescriptКопировать
+import { computed } from 'vue'
+import { IOffer } from '@/types'
+
+export function useFilteredOffers(offersRef: Ref<IOffer[]>, searchQuery: Ref<string>, filterType: Ref<'all' | 'auction' | 'direct'>) {
+  const filteredBySearch = computed(() => {
+    if (!searchQuery.value) return offersRef.value
+    return offersRef.value.filter(o => o.title.toLowerCase().includes(searchQuery.value.toLowerCase()))
+  })
+
+  const finalList = computed(() => {
+    if (filterType.value === 'all') return filteredBySearch.value
+    return filteredBySearch.value.filter(o => o.type === filterType.value)
+  })
+
+  return { finalList }
+}
+7. Адаптивность
+Реализуется через CSS Grid или Flexbox в контейнере карточек. Пример базовой сетки:
+cssКопировать
+.offers-grid {
+  display: grid;
+  gap: 20px;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+}
+@media (max-width: 600px) {
+  .offers-grid {
+    grid-template-columns: 1fr;
+  }
+}
+8. План выполнения за 7 дней
+День	Задача
+1	Создание структуры проекта Nuxt 3, настройка ESLint/Prettier для TS/Vue, создание типов IOffer.
+2	Разметка App.vue (навигация), реализация компонента OfferCard.vue со всеми полями макета. Подготовка JSON-файла с 10+ объектами.
+3	Верстка страницы «Склад»: сетка карточек, подключение данных, базовая адаптивность.
+4	Реализация Pinia-сторов (warehouse, favorites, deals). Настройка передачи данных между ними (добавление в избранное/сделки).
+5	Реализация фильтров (поиск, тип предложения) через композаблы на странице «Склад».
+6	Сборка страниц «Сделки» и «Избранное», интеграция их с соответствующими сторами, логика кнопок «Оплатить» / «Оплачено».
+7	Тестирование SPA (проверка отсутствия перезагрузок, сохранение состояний при переходах), написание README.md, деплой на GitHub Pages / Vercel.
+9. Чек-лист перед сдачей
+•	 Приложение запускается командой npm run dev.
+•	 Переходы между «Склад», «Сделки», «Избранное» происходят мгновенно без белого экрана (SPA).
+•	 Поиск обновляет выдачу в реальном времени.
+•	 Добавление в избранное/сделки меняет состояние иконки/текста кнопки и переносит карточку.
+•	 Кнопка «Оплачено» блокируется после первого клика на «Оплатить» даже после обновления страницы (при использовании localStorage в Pinia — опционально, но высоко ценится).
+•	 Код строго типизирован (нет директивы any).
+•	 Все компоненты разбиты логически, повторяющийся код вынесен в композаблы.
+•	 В корне репозитория есть README.md с описанием стека, инструкцией по установке зависимостей (npm ci) и запуску проекта.
+
