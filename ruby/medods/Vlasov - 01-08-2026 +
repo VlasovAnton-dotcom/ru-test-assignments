@@ -1,0 +1,456 @@
+РЕШЕНИЕ ЗАДАНИЯ - ВЛАСОВ - 01-08-2026
+Ниже — готовый план реализации тестового задания для Junior+ Ruby on Rails разработчика, с архитектурой, примерами кода, подходами к решению «проблем бесконечности» и состояния экземпляров, а также инструкциями для README, Docker и Swagger.
+
+---
+
+## Архитектура и ключевые решения
+
+### Предположения (для README)
+
+- Статусы задач: `pending`, `in_progress`, `completed`, `cancelled`.
+- Теги: `отчетность`, `операции`, `звонок` — зарезервированные, нельзя удалять/переименовывать.
+- API — RESTful, JSON.
+- Фильтрация задач: по статусам (массив), по диапазону дат (`from`, `to`).
+- Периодичность хранится в задаче, экземпляры (occurrences) не создаются заранее.
+- Состояние (статус) экземпляра хранится отдельно от шаблона задачи.
+- Окно запроса задач: обычно ±30–90 дней. Мы генерируем экземпляры «на лету» для окна запроса и объединяем с сохранёнными состояниями.
+
+Эти предположения нужно кратко зафиксировать в `README.md`.
+
+---
+
+## Структура БД (миграции)
+
+```ruby
+# db/migrate/XXXX_create_tasks.rb
+class CreateTasks < ActiveRecord::Migration[7.1]
+  def change
+    create_table :tasks do |t|
+      t.string :title, null: false
+      t.text :description
+      t.date :due_date, null: false # базовая дата для не-периодических или «первая дата»
+      t.string :status, default: "pending", null: false
+
+      # периодичность
+      t.string :recurrence_type, null: true # daily, monthly_day, specific_dates, even_odd
+      t.integer :recurrence_interval, null: true # n дней для daily
+      t.integer :monthly_day, null: true # 1..31
+      t.jsonb :specific_dates, default: [] # массив дат
+      t.string :even_odd, null: true # even / odd
+      t.date :recurrence_end_on, null: true
+
+      t.timestamps
+    end
+
+    add_index :tasks, :due_date
+    add_index :tasks, :status
+  end
+end
+
+# db/migrate/XXXX_create_tags.rb
+class CreateTags < ActiveRecord::Migration[7.1]
+  def change
+    create_table :tags do |t|
+      t.string :name, null: false, unique: true
+      t.boolean :locked, default: false, null: false
+      t.timestamps
+    end
+  end
+end
+
+# db/migrate/XXXX_create_task_tags.rb
+class CreateTaskTags < ActiveRecord::Migration[7.1]
+  def change
+    create_table :task_tags do |t|
+      t.references :task, null: false, foreign_key: true
+      t.references :tag, null: false, foreign_key: true
+      t.timestamps
+    end
+    add_index :task_tags, [:task_id, :tag_id], unique: true
+  end
+end
+
+# db/migrate/XXXX_create_task_occurrences.rb
+class CreateTaskOccurrences < ActiveRecord::Migration[7.1]
+  def change
+    create_table :task_occurrences do |t|
+      t.references :task, null: false, foreign_key: true
+      t.date :occurred_on, null: false
+      t.string :status, default: "pending", null: false
+      t.datetime :overridden_at, null: true # если экземпляр был изменён отдельно
+      t.text :override_reason, null: true
+      t.timestamps
+    end
+    add_index :task_occurrences, [:task_id, :occurred_on], unique: true
+    add_index :task_occurrences, :occurred_on
+  end
+end
+```
+
+### Seed-данные для тегов
+
+```ruby
+# db/seeds.rb
+locked_tags = %w[отчетность операции звонок]
+locked_tags.each do |name|
+  Tag.find_or_initialize_by(name: name).update!(locked: true)
+end
+```
+
+Контроллер или сервис должен запрещать удаление/изменение `locked: true` тегов.
+
+---
+
+## Модели
+
+```ruby
+# app/models/task.rb
+class Task < ApplicationRecord
+  has_many :task_tags, dependent: :destroy
+  has_many :tags, through: :task_tags
+
+  has_many :occurrences, dependent: :destroy
+
+  validates :title, presence: true
+  validates :due_date, presence: true
+  validates :status, inclusion: { in: %w[pending in_progress completed cancelled] }
+
+  validate :validate_recurrence
+
+  private
+
+  def validate_recurrence
+    case recurrence_type
+    when "daily"
+      errors.add(:recurrence_interval, "должен быть положительным") unless recurrence_interval&.positive?
+    when "monthly_day"
+      errors.add(:monthly_day, "должно быть от 1 до 31") unless monthly_day.present? && monthly_day.between?(1, 31)
+    when "even_odd"
+      errors.add(:even_odd, "должно быть even или odd") unless %w[even odd].include?(even_odd)
+    when "specific_dates"
+      errors.add(:specific_dates, "должен содержать даты") if specific_dates.blank? || specific_dates.any? { |d| !d.is_a?(Date) }
+    end
+  end
+end
+
+# app/models/tag.rb
+class Tag < ApplicationRecord
+  has_many :task_tags, dependent: :restrict_with_error
+  has_many :tasks, through: :task_tags
+
+  before_destroy :prevent_locked_deletion
+  before_update :prevent_locked_update
+
+  private
+
+  def prevent_locked_deletion
+    throw(:abort) if locked?
+  end
+
+  def prevent_locked_update
+    throw(:abort) if locked? && (name_changed? || locked_changed?)
+  end
+end
+
+# app/models/task_occurrence.rb
+class TaskOccurrence < ApplicationRecord
+  belongs_to :task
+
+  validates :occurred_on, presence: true, uniqueness: { scope: :task_id }
+  validates :status, inclusion: { in: %w[pending in_progress completed cancelled] }
+end
+```
+
+---
+
+## Логика генерации экземпляров (проблема бесконечности)
+
+Идея: не создавать миллионы строк. Для запроса списка задач в окне `[from_date, to_date]`:
+
+1. Берём все задачи, которые могут попадать в окно (по `due_date` и `recurrence_end_on`).
+2. Для каждой задачи генерируем «виртуальные» экземпляры в окне.
+3. Подтягиваем сохранённые состояния из `task_occurrences` по `(task_id, occurred_on)`.
+4. Если есть запись в `task_occurrences`, берём её статус; иначе — статус шаблона задачи.
+
+Пример сервиса:
+
+```ruby
+# app/services/task_occurrence_generator.rb
+class TaskOccurrenceGenerator
+  def self.generate_for_window(tasks, from_date, to_date)
+    results = []
+
+    tasks.each do |task|
+      dates = recurrence_dates(task, from_date, to_date)
+      dates.each do |d|
+        results << {
+          task: task,
+          occurred_on: d,
+          status: status_for_occurrence(task, d)
+        }
+      end
+    end
+
+    results
+  end
+
+  def self.status_for_occurrence(task, date)
+    occ = TaskOccurrence.find_by(task_id: task.id, occurred_on: date)
+    occ ? occ.status : task.status
+  end
+
+  private_class_method def self.recurrence_dates(task, from, to)
+    dates = []
+    start = task.due_date
+
+    return [] unless start
+
+    case task.recurrence_type
+    when "daily"
+      interval = task.recurrence_interval || 1
+      current = start
+      while current <= to && (task.recurrence_end_on.nil? || current <= task.recurrence_end_on)
+        dates << current if current >= from
+        current += interval.days
+      end
+    when "monthly_day"
+      day = task.monthly_day
+      current_month = start.beginning_of_month
+      while current_month <= to
+        candidate = current_month + (day - 1).days
+        if candidate.month == current_month.month && candidate >= from && candidate <= to
+          dates << candidate if (task.recurrence_end_on.nil? || candidate <= task.recurrence_end_on)
+        end
+        current_month += 1.month
+      end
+    when "even_odd"
+      mode = task.even_odd # even/odd
+      current = start
+      while current <= to && (task.recurrence_end_on.nil? || current <= task.recurrence_end_on)
+        if current >= from
+          day = current.day
+          if (mode == "even" && day.even?) || (mode == "odd" && day.odd?)
+            dates << current
+          end
+        end
+        current += 1.day
+      end
+    when "specific_dates"
+      dates = (task.specific_dates || []).select { |d| d.between?(from, to) }
+    else
+      # одиночная задача
+      dates << start if start.between?(from, to)
+    end
+
+    dates
+  end
+end
+```
+
+В контроллере:
+
+```ruby
+# app/controllers/api/v1/tasks_controller.rb
+module Api
+  module V1
+    class TasksController < ApplicationController
+      before_action :set_date_range
+
+      def index
+        tasks = Task.all
+        occurrences = TaskOccurrenceGenerator.generate_for_window(tasks, @from, @to)
+
+        # фильтрация по статусам
+        statuses = params[:statuses]&.split(",")
+        if statuses
+          occurrences.select! { |o| statuses.include?(o[:status]) }
+        end
+
+        render json: occurrences.map do |o|
+          {
+            id: o[:task].id,
+            title: o[:task].title,
+            description: o[:task].description,
+            due_date: o[:occurred_on],
+            status: o[:status],
+            recurrence_type: o[:task].recurrence_type,
+            tags: o[:task].tags.pluck(:name)
+          }
+        end
+      end
+
+      def show
+        task = Task.find(params[:id])
+        render json: {
+          id: task.id,
+          title: task.title,
+          description: task.description,
+          due_date: task.due_date,
+          status: task.status,
+          recurrence_type: task.recurrence_type,
+          tags: task.tags.pluck(:name)
+        }
+      end
+
+      def create
+        task = Task.new(task_params)
+        if task.save
+          # можно сразу создать теги через join-таблицу
+          tag_names = params[:tags] || []
+          tag_names.each do |name|
+            tag = Tag.find_or_create_by!(name: name)
+            TaskTag.create!(task: task, tag: tag)
+          end
+          render json: task, status: :created
+        else
+          render json: { errors: task.errors.full_messages }, status: :unprocessable_entity
+        end
+      end
+
+      private
+
+      def set_date_range
+        @from = Date.parse(params[:from] || 30.days.ago.to_s) rescue 30.days.ago.to_date
+        @to = Date.parse(params[:to] || 30.days.from_now.to_s) rescue 30.days.from_now.to_date
+      end
+
+      def task_params
+        params.require(:task).permit(
+          :title, :description, :due_date, :status,
+          :recurrence_type, :recurrence_interval, :monthly_day, :even_odd,
+          :specific_dates, :recurrence_end_on
+        )
+      end
+    end
+  end
+end
+```
+
+Для изменения статуса конкретного экземпляра:
+
+```ruby
+# POST /api/v1/task_occurrences
+def create_occurrence_override
+  task = Task.find(params[:task_id])
+  date = Date.parse(params[:occurred_on])
+  occ, created = TaskOccurrence.find_or_initialize_by(task_id: task.id, occurred_on: date)
+  occ.status = params[:status]
+  occ.override_reason = params[:override_reason]
+  if occ.save
+    render json: occ
+  else
+    render json: { errors: occ.errors.full_messages }, status: :unprocessable_entity
+  end
+end
+```
+
+Это решает проблему «состояния конкретного экземпляра» и «исключений из правил» (бонусная часть): отдельный `TaskOccurrence` с собственным статусом и причиной изменения.
+
+---
+
+## Контроллеры для тегов
+
+Нужен отдельный контроллер для управления тегами (создание, список, запрет на удаление/изменение locked). Реализуйте CRUD тегов с проверкой `locked`.
+
+---
+
+## Docker и docker-compose
+
+```yaml
+# docker-compose.yml
+version: "3.9"
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: rails
+      POSTGRES_PASSWORD: rails
+      POSTGRES_DB: rails_dev
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  web:
+    build: .
+    command: bash -c "bundle install && bundle exec rails server -p 3000 -b '0.0.0.0'"
+    volumes:
+      - .:/app
+    ports:
+      - "3000:3000"
+    depends_on:
+      - db
+    environment:
+      DATABASE_URL: postgres://rails:rails@db:5432/rails_dev
+
+volumes:
+  pgdata:
+```
+
+```Dockerfile
+FROM ruby:3.4
+
+RUN apt-get update -qq && apt-get install -y build-essential libpq-dev nodejs npm
+
+WORKDIR /app
+COPY Gemfile Gemfile.lock ./
+RUN bundle install
+
+COPY . .
+
+EXPOSE 3000
+```
+
+Инструкция по запуску в `README.md`:
+
+```md
+# Запуск проекта
+
+1. Убедитесь, что установлен Docker и docker-compose.
+2. Запустите:
+   ```bash
+   docker-compose up --build
+   ```
+3. После запуска выполните миграции и seed:
+   ```bash
+   docker-compose exec web rails db:migrate
+   docker-compose exec web rails db:seed
+   ```
+4. Приложение доступно на http://localhost:3000.
+```
+
+---
+
+## Swagger-документация
+
+Используйте `rack-openapi` или `rspec-api-documentation` / `swagger-ui`. Для простоты можно подготовить YAML-описание API вручную и положить в `docs/openapi.yaml`, а в README указать, как его открыть в Swagger UI.
+
+Включите в документацию:
+
+- Ресурсы: `/api/v1/tasks`, `/api/v1/tags`, `/api/v1/task_occurrences`.
+- Методы: GET, POST, PATCH, DELETE.
+- Параметры запросов: `from`, `to`, `statuses`.
+- Примеры запросов/ответов.
+- Описания полей и валидаций.
+
+---
+
+## Что положить в репозиторий
+
+- `Gemfile` с нужными геммами (`rails`, `pg`, `rack-openapi`, `rspec-rails` и т.п.).
+- Миграции, модели, контроллеры, сервисы.
+- Dockerfile, docker-compose.yml.
+- `README.md` с описанием предположений, инструкцией запуска, структурой API.
+- `docs/openapi.yaml` (Swagger).
+- `HISTORY.md` — история ваших запросов к LLM (можно скопировать чат).
+
+---
+
+## На что обратить внимание при проверке
+
+- **Чистота API**: понятные URL, консистентные имена полей, коды ответов.
+- **Бизнес-сценарии**: работа с периодичностью, фильтрация, статусы экземпляров.
+- **Код**: соблюдение Rails-конвенций, отсутствие дублирования, понятные сервисы/модели.
+- **Тестирование**: хотя в задании не указано явно, наличие хотя бы нескольких RSpec-тестов на генерацию дат и статусы будет плюсом.
+
+Если скажете, какой подход к тестам вы предпочитаете (RSpec/Minitest) и хотите ли сразу добавить e2e-тесты на API, могу дать готовые примеры тестов под этот проект.
