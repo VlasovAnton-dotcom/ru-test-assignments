@@ -1,0 +1,252 @@
+решение задачи - Власов - 01-08-2026 ;-)
+Ниже представлена архитектурная концепция и детализированный план реализации системы решения математических уравнений, полностью соответствующей вашим требованиям.
+1. Общая архитектура (High-Level Design)
+Система строится по принципу разделения ответственности:
+•	Фронтенд: Ruby on Rails (API-only или с отключенным рендерингом на бэкенде). Отвечает за UI/UX, сбор данных, валидацию на клиенте и асинхронное взаимодействие.
+•	Бэкенд: Sinatra (или Grape DSL поверх Rack). Чистое API-приложение, отвечающее за бизнес-логику вычислений, строгую валидацию и аутентификацию.
+•	Связь: JSON over HTTPS. Фронтенд выступает клиентом для Бэкенда.
+2. Бэкенд сервер (Sinatra / Grape)
+Структура проекта: app/models/equation.rb — базовый класс. app/models/linear_equation.rb, app/models/quadratic_equation.rb — наследники. app/api/v1/equations_api.rb — эндпоинты. config.ru — точка входа Rack.
+а) Наследование и полиморфизм (Обычаи Ruby/Rails-way)
+Вместо классического абстрактного класса используется фабрика объектов (EquationFactory), которая инстанцирует нужный тип уравнения через единый интерфейс .solve.
+rubyКопировать
+# app/models/equation_factory.rb
+class EquationFactory
+  def self.build(type:, params:)
+    case type
+    when 'linear'
+      LinearEquation.new(params)
+    when 'quadratic'
+      QuadraticEquation.new(params)
+    else
+      raise ArgumentError, "Unknown equation type"
+    end
+  end
+end
+
+# app/models/equation.rb (базовый контракт)
+class Equation
+  attr_reader :params
+  
+  def initialize(params)
+    @params = params.transform_keys(&:to_s)
+    validate_params!
+  end
+
+  def solve
+    raise NotImplementedError
+  end
+
+  protected
+  def validate_params!
+    # Базовая проверка наличия ключей реализуется в наследниках
+  end
+end
+
+# app/models/linear_equation.rb
+class LinearEquation < Equation
+  REQUIRED_KEYS = %w[a b].freeze
+
+  def validate_params!
+    missing = REQUIRED_KEYS - params.keys
+    raise ArgumentError, "Missing keys: #{missing.join(', ')}" unless missing.empty?
+    
+    check_numeric!(params['a'], 'a')
+    check_numeric!(params['b'], 'b')
+    raise ArgumentError, 'Coefficient a cannot be zero' if params['a'].to_f.zero?
+  end
+
+  def solve
+    { root: (-params['b'].to_f / params['a'].to_f).round(4) }
+  end
+
+  private
+  def check_numeric!(value, name)
+    Float(value)
+  rescue ArgumentError, TypeError
+    raise ArgumentError, "Parameter '#{name}' must be numeric"
+  end
+end
+
+# app/models/quadratic_equation.rb
+class QuadraticEquation < Equation
+  REQUIRED_KEYS = %w[a b c].freeze
+
+  def validate_params!
+    missing = REQUIRED_KEYS - params.keys
+    raise ArgumentError, "Missing keys: #{missing.join(', ')}" unless missing.empty?
+    
+    REQUIRED_KEYS.each { |k| check_numeric!(params[k], k) }
+    raise ArgumentError, 'Coefficient a cannot be zero' if params['a'].to_f.zero?
+  end
+
+  def solve
+    a, b, c = params.values_at('a', 'b', 'c').map(&:to_f)
+    d = b**2 - 4 * a * c
+    
+    if d < 0
+      { roots: [], discriminant: d.round(4), message: 'No real roots' }
+    elsif d.zero
+      { roots: [(-b / (2 * a)).round(4)], discriminant: d.round(4) }
+    else
+      sqrt_d = Math.sqrt(d)
+      x1 = ((-b + sqrt_d) / (2 * a)).round(4)
+      x2 = ((-b - sqrt_d) / (2 * a)).round(4)
+      { roots: [x1, x2].sort, discriminant: d.round(4) }
+    end
+  end
+end
+б) Точка входа (Grape DSL предпочтительнее чистого Sinatra для масштабируемости)
+rubyКопировать
+# app/api/v1/root.rb
+module V1
+  class Root < Grape::API
+    format :json
+    prefix :api
+    version :v1
+    
+    helpers do
+      def authenticate!
+        error!('Unauthorized', 401) unless request.headers['X-Api-Key'] == ENV['MATH_API_KEY']
+      end
+    end
+
+    before { authenticate! }
+
+    resource :equations do
+      post do
+        begin
+          factory = EquationFactory.build(type: permitted_params[:type], params: permitted_params[:data])
+          result = factory.solve
+          { status: 'success', data: result }
+        rescue ArgumentError => e
+          error_response(422, e.message)
+        rescue StandardError => e
+          # Логирование ошибки здесь обязательно
+          error_response(500, 'Internal server error during calculation')
+        end
+      end
+    end
+
+    private
+
+    def permitted_params
+      declared(params, include_missing: false).symbolize_keys
+    end
+
+    def error_response(code, message)
+      status code
+      { status: 'error', message: message }
+    end
+  end
+end
+в) Аутентификация
+Простая схема на базе заголовка X-Api-Key. Ключ хранится в переменных окружения сервера (ENV['MATH_API_KEY']). В будущем может быть заменена на JWT-токены.
+3. Фронтенд сервер (Ruby on Rails)
+Приложение разворачивается отдельно от Бэкенда.
+а) Контроллер и маршруты
+routes.rb: get '/solver', to: 'solver#index' Контроллер содержит только один экшен index, который отдает HTML-шаблон. Вся логика живет во вьюхе и JS.
+б) Форма и AJAX-взаимодействие (StimulusJS как стандарт RoR)
+Использование встроенного в Rails 7 фреймворка Stimulus позволяет избежать «спагетти-кода» на чистом JS и сохранить прогрессивное улучшение.
+htmlКопировать
+<!-- app/views/solver/index.html.erb -->
+<div data-controller="equation">
+  <select data-equation-target="typeSelect" data-action="change->equation#toggleForm">
+    <option value="linear">Линейное</option>
+    <option value="quadratic">Квадратное</option>
+  </select>
+
+  <div id="form-container"></div>
+  <div id="result-container"></div>
+</div>
+javascriptКопировать
+// app/javascript/controllers/equation_controller.js
+import { Controller } from "@hotwired/stimulus"
+import { patch } from "@rails/request.js"
+
+export default class extends Controller {
+  static targets = ["typeSelect"]
+
+  connect() {
+    this.renderForm()
+  }
+
+  toggleForm() {
+    this.renderForm()
+  }
+
+  async renderForm() {
+    const response = await fetch(`/solver/${this.typeSelectTarget.value}_form.html`)
+    document.getElementById('form-container').innerHTML = await response.text()
+  }
+
+  async solve(event) {
+    event.preventDefault()
+    const form = event.target
+    const url = form.action
+    const method = form.method.toLowerCase()
+    
+    // Сбор параметров из кастомных атрибутов data-
+    const payload = {}
+    form.querySelectorAll('[data-coeff]').forEach(input => {
+      payload[input.dataset.coeff] = input.value
+    })
+
+    try {
+      const res = await patch(url, { 
+        body: JSON.stringify({ type: this.typeSelectTarget.value, data: payload }),
+        responseKind: 'json',
+        headers: { 'Content-Type': 'application/json' }
+      })
+      
+      if (res.status === 200) {
+        this.displayResult(res.body)
+      } else {
+        this.displayError(res.body.message || 'Ошибка сети')
+      }
+    } catch (e) {
+      this.displayError(e.message)
+    }
+  }
+
+  displayResult(data) {
+    // Дружественный вывод
+    let html = '<h3>Результат:</h3>'
+    if (data.data.roots && data.data.roots.length > 0) {
+      html += `<p>Корни: ${data.data.roots.join(', ')}</p>`
+    }
+    if (data.data.discriminant) {
+      html += `<p>Дискриминант: ${data.data.discriminant}</p>`
+    }
+    if (data.data.message) {
+      html += `<p><em>${data.data.message}</em></p>`
+    }
+    document.getElementById('result-container').innerHTML = html
+  }
+
+  displayError(message) {
+    document.getElementById('result-container').innerHTML = `<p style="color: red;">Ошибка: ${message}</p>`
+  }
+}
+(Примечание: файлы частичных форм _linear_form.html.erb и _quadratic_form.html.erb содержат поля ввода с атрибутами data-coeff="a" и т.д.)
+в) CSS
+Рекомендуется использовать TailwindCSS (стандарт де-факто для новых проектов на Rails) или SCSS-модули. Страницы делятся на три состояния: [data-page="choice"], [data-page="input"], [data-page="result"].
+г) Валидация на стороне клиента
+Перед отправкой AJAX-запроса JavaScript проверяет:
+•	Поля не пусты.
+•	Значения проходят проверку регулярного выражения /^-?\d+(\.\d+)?$/.
+•	Для квадратного уравнения коэффициент a≠0a \neq 0a=0. При ошибке валидации запрос на Бэкенд не уходит, пользователю подсвечивается конкретное поле.
+4. Тестирование
+•	Бэкенд (RSpec): Unit-тесты для каждого класса уравнения (проверка дискриминанта, нуля, комплексных чисел исключаются согласно логике), тесты фабрики, интеграционные тесты эндпоинтов (статус 200, 401 при отсутствии ключа, 422 при неверном формате).
+•	Фронтенд (RSpec + Capybara + Cucumber): Feature specs для прохождения полного цикла выбора типа -> заполнения формы -> получения ответа. Проверка отображения ошибок 500 от Бэкенда. Cucumber-сценарии для описания пользовательских путей (BDD).
+•	Сквозное (E2E): При необходимости можно добавить Playwright для проверки взаимодействия двух запущенных приложений.
+5. Обработка исключительных ситуаций
+•	Неверный тип аргументов (буквы вместо цифр): Валидируется Regex на фронте. На бэкенде попытка преобразования к Float выбросит ArgumentError, который перехватывается общим rescue и отдается фронту со статусом 422.
+•	Недостаточное количество параметров: Проверяется в каждом классе уравнения через вычитание массивов ключей. Ошибка 422.
+•	Логические ошибки (a=0a=0a=0 для квадратного): Специфическая ошибка бизнес-логики, статус 422.
+•	Падение Бэкенда (500): Rescue-блок на Бэкенде ловит непредвиденные ошибки, залогирует их (например, в Sentry) и возвращает фронтэнду заглушку {"status": "error", "message": "..."}. Фронтенд должен уметь отличать ошибку валидации (поле красное) от системной ошибки (баннер вверху страницы).
+6. Развертывание (Deployment)
+•	Приложения упаковываются в Docker-образы.
+•	Nginx работает как обратный прокси (Reverse Proxy), маршрутизируя запросы с /api/* на порт Бэкенда (Sinatra), а все остальные — на порт Фронтенда (Rails/Puma).
+•	Рекомендуется использование PostgreSQL для хранения сессий Frontend-приложения и Redis для фоновых задач, если они появятся.
+
