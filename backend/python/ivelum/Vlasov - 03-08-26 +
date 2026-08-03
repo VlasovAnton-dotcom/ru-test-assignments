@@ -1,0 +1,189 @@
+Вариант решения задачи - Vlasov - 03-08-26 + 
+Минималистичная реализация HTTP прокси на Python (с соблюдением PEP 8), которая:
+•	слушает 127.0.0.1:8232;
+•	проксирует запросы к news.ycombinator.com;
+•	модифицирует HTML текст: после каждого слова из ровно 6 букв добавляет ™;
+•	сохраняет все ссылки на страницах HN относительными или перенаправляет через прокси, чтобы навигация оставалась на адресе прокси;
+•	корректно отдаёт HTML, картинки, скрипты и прочее «как есть» (кроме модификации текста в HTML ответах).
+________________________________________
+Реализация (proxy.py)
+python
+ПереноситьСвернутьКопировать
+import re
+import socket
+from http.client import HTTPConnection
+from urllib.parse import urlparse, urlunparse, urljoin
+
+HOST = "127.0.0.1"
+PORT = 8232
+HN_HOST = "news.ycombinator.com"
+HN_PORT = 80
+
+# Паттерн: слово из ровно 6 букв (латиница), окружённое границами слов.
+WORD_6_LETTERS_PATTERN = re.compile(r"\b([A-Za-z]{6})\b")
+
+
+def modify_text(text: str) -> str:
+    """Добавляет ™ после каждого слова из 6 букв."""
+    return WORD_6_LETTERS_PATTERN.sub(r"\1™", text)
+
+
+def rewrite_links(html: str, base_url: str) -> str:
+    """
+    Переписывает href/src ссылки так, чтобы они шли через прокси.
+    Поддерживает относительные и абсолютные URL на news.ycombinator.com.
+    """
+
+    def replace_url(match: re.Match) -> str:
+        url = match.group(1)
+        parsed = urlparse(url)
+
+        # Если ссылка не на HN (или пустая) — оставляем как есть
+        if not parsed.netloc or parsed.netloc == HN_HOST:
+            # Нормализуем к абсолютному URL относительно base_url
+            absolute_url = urljoin(base_url, url)
+            parsed_abs = urlparse(absolute_url)
+
+            # Формируем новый URL через прокси: /<path>?<query>
+            new_path = parsed_abs.path
+            if parsed_abs.query:
+                new_path += "?" + parsed_abs.query
+
+            return f'"http://{HOST}:{PORT}{new_path}"'
+        return match.group(0)
+
+    # Переписываем href (в кавычках)
+    html = re.sub(r'href\s*=\s*"([^"]*)"', replace_url, html)
+    # Переписываем src (в кавычках)
+    html = re.sub(r'src\s*=\s*"([^"]*)"', replace_url, html)
+
+    return html
+
+
+def fetch_from_hn(path: str, headers: dict) -> tuple[bytes, dict]:
+    """Делает запрос к HN и возвращает (body, response_headers)."""
+    conn = HTTPConnection(HN_HOST, HN_PORT, timeout=10)
+    conn.request("GET", path, headers=headers)
+    resp = conn.getresponse()
+
+    body = resp.read()
+    resp_headers = dict(resp.getheaders())
+
+    conn.close()
+    return body, resp_headers
+
+
+def handle_client(client_socket: socket.socket) -> None:
+    request_data = client_socket.recv(65536).decode("latin-1", errors="ignore")
+    if not request_data:
+        client_socket.close()
+        return
+
+    lines = request_data.splitlines()
+    if not lines:
+        client_socket.close()
+        return
+
+    first_line = lines[0]
+    method, path, _ = first_line.split(" ", 2)
+
+    if method != "GET":
+        # Для простоты отвечаем 405 только на не-GET
+        response = (
+            "HTTP/1.1 405 Method Not Allowed\r\n"
+            "Content-Type: text/plain\r\n"
+            "Connection: close\r\n\r\n"
+            "Only GET is supported."
+        )
+        client_socket.sendall(response.encode("latin-1"))
+        client_socket.close()
+        return
+
+    # Извлекаем заголовки клиента
+    headers = {}
+    i = 1
+    while i < len(lines) and lines[i]:
+        if ":" in lines[i]:
+            key, _, value = lines[i].partition(":")
+            headers[key.strip()] = value.strip()
+        i += 1
+
+    # Удаляем Host, чтобы не ломать запрос к HN
+    headers.pop("Host", None)
+
+    # Формируем базовый URL для переписания ссылок
+    base_url = f"http://{HN_HOST}{path}"
+
+    try:
+        body, hn_headers = fetch_from_hn(path, headers)
+    except Exception:
+        response = (
+            "HTTP/1.1 502 Bad Gateway\r\n"
+            "Content-Type: text/plain\r\n"
+            "Connection: close\r\n\r\n"
+            "Failed to connect to Hacker News."
+        )
+        client_socket.sendall(response.encode("latin-1"))
+        client_socket.close()
+        return
+
+    content_type = hn_headers.get("Content-Type", "")
+
+    # Модифицируем только HTML
+    if "text/html" in content_type:
+        text = body.decode("utf-8", errors="ignore")
+        text = modify_text(text)
+        text = rewrite_links(text, base_url)
+        body = text.encode("utf-8")
+
+        # Обновляем Content-Length
+        hn_headers["Content-Length"] = str(len(body))
+
+    # Собираем ответ
+    status_line = f"HTTP/1.1 {hn_headers.pop('Status', '200 OK')}\r\n"
+    header_lines = "\r\n".join(f"{k}: {v}" for k, v in hn_headers.items())
+    response = f"{status_line}{header_lines}\r\n\r\n".encode("latin-1") + body
+
+    client_socket.sendall(response)
+    client_socket.close()
+
+
+def run_proxy() -> None:
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server.bind((HOST, PORT))
+    server.listen(5)
+    print(f"Proxy listening on http://{HOST}:{PORT}")
+
+    try:
+        while True:
+            client, _ = server.accept()
+            handle_client(client)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.close()
+
+
+if __name__ == "__main__":
+    run_proxy()
+________________________________________
+Как запустить
+1.	Установите Python 3.8+ (последняя версия).
+2.	Сохраните код в proxy.py.
+3.	Запустите: 
+bash
+ПереноситьСвернутьКопировать
+python proxy.py
+4.	Откройте в браузере: 
+text
+ПереноситьСвернутьКопировать
+http://127.0.0.1:8232/
+Это будет проксированная версия Hacker News с добавленным ™ после каждого 6 буквенного слова.
+________________________________________
+Важные нюансы
+•	Только HTML контент модифицируется. Картинки, CSS, JS и другие ресурсы отдаются без изменений (кроме переписанных ссылок).
+•	Ссылки переписаны на прокси. При клике браузер остаётся на 127.0.0.1:8232, поэтому навигация работает корректно.
+•	Границы слов и 6 букв. Используется регулярное выражение \b([A-Za-z]{6})\b, поэтому учитываются только слова из 6 латинских букв, отделённые пробелами/знаками препинания.
+•	PEP 8 соблюдён, код максимально компактный без потери читаемости.
+
