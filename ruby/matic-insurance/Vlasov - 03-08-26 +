@@ -1,0 +1,304 @@
+Below is a detailed architectural and implementation plan for the "Cats Dealer" service. The solution prioritizes clean design, extensibility (Open/Closed Principle), robust error handling, and testability.
+
+1. Technology Stack
+Language: Ruby (3.x)
+Framework: Sinatra — lightweight DSL for creating API-only services, perfect for this task without Rails overhead.
+HTTP Client: Faraday — flexible middleware-based client with built-in timeouts and retries.
+XML Parsing: Nokogiri — industry standard for parsing XML in Ruby.
+Testing: RSpec + WebMock/WebStubs — to isolate external HTTP calls during tests.
+Configuration: dotenv gem for environment variables (e.g., shop endpoints).
+2. Project Structure & Clean Design
+
+The code will be organized following PORO (Plain Old Ruby Object) principles. Business logic lives outside controllers; adapters handle third-party specifics.
+
+Копировать
+cats_dealer/
+├── app/
+│   ├── application.rb          # Main Sinatra entry point
+│   ├── config/
+│   │   └── shops.yml           # Configuration of available shops
+│   ├── domain/
+│   │   ├── cat.rb              # Value object representing a Cat deal
+│   │   └── dealer.rb           # Orchestrator that finds the best price
+│   ├── infrastructure/
+│   │   ├── http_client.rb      # Wrapper around Faraday (timeouts, logging)
+│   │   ├── adapter_base.rb     # Abstract base class for all shop adapters
+│   │   ├── cats_unlimited_adapter.rb # JSON integration (refactored)
+│   │   └── happy_cats_adapter.rb     # New XML integration
+│   └── errors/
+│       ├── api_error.rb        # Base error for any shop failure
+│       ├── network_error.rb    # Timeout / connection issues
+│       └── parse_error.rb      # Invalid JSON/XML from a shop
+├── spec/
+│   ├── domain/
+│   │   └── dealer_spec.rb
+│   └── infrastructure/
+│       ├── cats_unlimited_adapter_spec.rb
+│       └── happy_cats_adapter_spec.rb
+├── Gemfile
+└── Rakefile
+3. Domain Layer: Data Objects and Logic
+
+app/domain/cat.rb
+A simple immutable value object using Struct. It ensures data consistency across different sources.
+
+ruby
+Копировать
+# frozen_string_literal: true
+
+Cat = Struct.new(:id, :name, :breed, :price, :shop_name, keyword_init: true) do
+  validates :price, numericality: { greater_than_or_equal_to: 0 }
+end
+
+app/domain/dealer.rb
+The core business logic. It doesn't know about HTTP or JSON/XML. It only knows how to compare prices. This makes it trivial to unit test.
+
+ruby
+Копировать
+# frozen_string_literal: true
+
+class Dealer
+  def initialize(adapters)
+    @adapters = adapters
+  end
+
+  # customer_location can be used later for shipping costs calculation
+  def find_best_deal(customer_location:)
+    deals = []
+    
+    @adapters.each do |adapter|
+      begin
+        deals.concat(adapter.fetch_available_cats)
+      rescue StandardError => e
+        # Log the error but don't stop the whole process
+        warn "[#{adapter.class.name}] Failed to fetch cats: #{e.message}"
+      end
+    end
+
+    return nil if deals.empty?
+
+    deals.min_by(&:price)
+  end
+end
+4. Infrastructure Layer: Adapters and Error Handling
+
+This layer isolates dirty work (parsing, networking). Each new shop requires only a new adapter inheriting from AdapterBase.
+
+app/infrastructure/http_client.rb
+Centralized place for time-outs and common headers.
+
+ruby
+Копировать
+require 'faraday'
+
+class HttpClient
+  DEFAULT_TIMEOUT = 5
+
+  def self.connection(base_url:, read_timeout: DEFAULT_TIMEOUT, open_timeout: DEFAULT_TIMEOUT)
+    Faraday.new(url: base_url) do |conn|
+      conn.options.read_timeout = read_timeout
+      conn.options.open_timeout = open_timeout
+      conn.response :raise_error
+      conn.adapter Faraday.default_adapter
+    end
+  end
+end
+
+app/infrastructure/adapter_base.rb
+Defines the contract. All future adapters must implement fetch_available_cats.
+
+ruby
+Копировать
+# frozen_string_literal: true
+
+class AdapterBase
+  def fetch_available_cats
+    raise NotImplementedError
+  end
+end
+
+app/infrastructure/cats_unlimited_adapter.rb (Refactored)
+Cleaner separation between fetching raw data and mapping it to domain objects.
+
+ruby
+Копировать
+# frozen_string_literal: true
+
+require_relative 'http_client'
+require_relative '../domain/cat'
+require_relative '../errors/api_error'
+
+class CatsUnlimitedAdapter < AdapterBase
+  BASE_URL = ENV.fetch('CATS_UNLIMITED_API', 'https://nh7b1g9g23.execute-api.us-west-2.amazonaws.com/dev')
+
+  def fetch_available_cats
+    response = HttpClient.connection(base_url: BASE_URL).get('/cats/json')
+    body = JSON.parse(response.body)
+    map_response(body['cats'])
+  rescue Faraday::TimeoutError, Faraday::ConnectionFailed => e
+    raise NetworkError.new("Cats Unlimited", e.message)
+  rescue JSON::ParserError => e
+    raise ParseError.new("Cats Unlimited", e.message)
+  end
+
+  private
+
+  def map_response(cats_data)
+    cats_data.map do |cat_hash|
+      Cat.new(
+        id: cat_hash['id'],
+        name: cat_hash['name'],
+        breed: cat_hash['breed'],
+        price: cat_hash['price'].to_f,
+        shop_name: 'Cats Unlimited'
+      )
+    end
+  end
+end
+
+app/infrastructure/happy_cats_adapter.rb (New Implementation)
+Handles XML namespaces gracefully.
+
+ruby
+Копировать
+# frozen_string_literal: true
+
+require_relative 'http_client'
+require_relative '../domain/cat'
+require 'nokogiri'
+require_relative '../errors/api_error'
+
+class HappyCatsAdapter < AdapterBase
+  BASE_URL = ENV.fetch('HAPPY_CATS_API', 'https://nh7b1g9g23.execute-api.us-west-2.amazonaws.com/dev')
+
+  def fetch_available_cats
+    response = HttpClient.connection(base_url: BASE_URL).get('/cats/xml')
+    doc = Nokogiri::XML(response.body)
+    cats_nodes = doc.xpath('//catalog/cat') # Adjust XPath based on actual XML structure
+    map_response(cats_nodes)
+  rescue Faraday::TimeoutError, Faraday::ConnectionFailed => e
+    raise NetworkError.new("Happy Cats", e.message)
+  rescue Nokogiri::XML::SyntaxError => e
+    raise ParseError.new("Happy Cats", e.message)
+  end
+
+  private
+
+  def map_response(nodes)
+    nodes.map do |node|
+      Cat.new(
+        id: node.at_xpath('id')&.text,
+        name: node.at_xpath('name')&.text,
+        breed: node.at_xpath('breed')&.text,
+        price: node.at_xpath('price')&.text.to_f,
+        shop_name: 'Happy Cats'
+      )
+    end
+  end
+end
+
+app/errors/
+Custom exceptions allow the orchestrator (Dealer) to distinguish between retryable failures (network) and permanent ones (bad data format).
+
+ruby
+Копировать
+# app/errors/api_error.rb
+class ApiError < StandardError; end
+class NetworkError < ApiError; end
+class ParseError < ApiError; end
+5. Application Entry Point (API Controller)
+
+app/application.rb
+Sinatra controller remains thin. Its only job is request validation, calling the domain layer, and formatting responses.
+
+ruby
+Копировать
+# frozen_string_literal: true
+
+require 'sinatra/base'
+require 'json'
+require_relative './infrastructure/cats_unlimited_adapter'
+require_relative './infrastructure/happy_cats_adapter'
+require_relative './domain/dealer'
+
+class CatsDealerApp < Sinatra::Base
+  configure do
+    set :show_exceptions, false
+    disable :protection # For simplicity in example
+  end
+
+  before do
+    content_type 'application/json'
+  end
+
+  get '/api/v1/best_cat' do
+    location = params[:location]
+    halt 400, { error: 'Location parameter is required' }.to_json if location.nil? || location.strip.empty?
+
+    adapters = [CatsUnlimitedAdapter.new, HappyCatsAdapter.new]
+    dealer = Dealer.new(adapters)
+    
+    result = dealer.find_best_deal(customer_location: location)
+
+    if result
+      status 200
+      result.to_h.merge(message: "Best deal found!").to_json
+    else
+      status 404
+      { message: 'No cats available at the moment from integrated shops.' }.to_json
+    end
+  end
+
+  # Global error handler
+  error ApiError do
+    status 502
+    env['sinatra.error'].message
+  end
+end
+6. Test Coverage Strategy
+
+Tests should cover three layers:
+
+Unit Tests for Adapters: Use webmock to stub successful responses (JSON/XML), as well as malformed bodies and timeouts. Verify that they return an array of valid Cat structs or raise correct custom errors.
+Unit Tests for Dealer: Do not hit the network here. Pass doubles/mocks of adapters directly into Dealer, forcing them to return pre-defined arrays of Cat objects. Check edge cases: empty list, one failing adapter, two identical prices.
+Integration Test for Endpoint: Spin up the Sinatra app (Rack::Test), make a real GET request to /api/v1/best_cat, and assert the final combined JSON payload and HTTP status codes (200, 400, 404, 502).
+Example Responses
+
+Success (Status 200):
+
+json
+Копировать
+{
+  "id": "cat_123",
+  "name": "Barsik",
+  "breed": "Siberian",
+  "price": 450.0,
+  "shop_name": "Happy Cats",
+  "message": "Best deal found!"
+}
+
+Bad Request (Status 400):
+
+json
+Копировать
+{ "error": "Location parameter is required" }
+
+No Results (Status 404):
+
+json
+Копировать
+{ "message": "No cats available at the moment from integrated shops." }
+
+Upstream Failure (Status 502):
+
+json
+Копировать
+"Happy Cats API responded with Read timeout (exceeded 5 seconds)"
+Future Extensibility Notes
+
+To add a third shop ("Fluffy Friends"), you would only need to:
+
+Create app/infrastructure/fluffy_friends_adapter.rb inheriting from AdapterBase.
+Implement its specific authentication (if needed), pagination, and parser (CSV, GraphQL, etc.).
+Add it to the dependency injection container or simply instantiate it in the controller alongside others.
+No changes are required in Dealer, existing adapters, or database schemas.
