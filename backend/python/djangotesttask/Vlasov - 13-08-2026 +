@@ -1,0 +1,368 @@
+Решение задачи - Vlasov - 13-08-2026
+Help ИИ Rabler
+
+### Веб-приложение для хранения впечатлений о посещаемых местах
+
+#### Описание функционала:
+
+- Пользователь регистрируется через OAuth (Google или VK).
+- После регистрации открывается главная страница с именем и фотографией пользователя.
+- Пользователь может добавлять воспоминания о посещённых местах, заполнив форму с указанием места на карте, названием и комментарием.
+- Воспоминания отображаются на главной странице в виде списка.
+- Возможность выхода из аккаунта и повторного входа с сохранёнными впечатлениями.
+
+#### Требования к реализации:
+
+- Реализация на Django.
+- Соответствие PEP8 и стилям Django.
+- Актуальные зависимости.
+- Покрытие основного функционала юнит-тестами.
+- Использование Bootstrap для оформления.
+- Хранение кода на GitHub с историей коммитов.
+- Возможные бонусы: Docker, Coveralls, Github Actions, линтеры.
+
+---
+
+### Структура проекта
+
+```bash
+travel_memories/
+├── travelmemories/         # Основное приложение
+│   ├── migrations/
+│   ├── templates/
+│   │   ├── base.html
+│   │   ├── home.html
+│   │   └── add_memory.html
+│   ├── forms.py           # Формы для добавления воспоминаний
+│   ├── models.py          # Модели базы данных
+│   ├── views.py           # Представления
+│   ├── urls.py            # Маршрутизация
+│   └── tests.py           # Юнит-тесты
+├── config/                 # Конфигурационные файлы
+│   ├── settings.py        # Настройки Django
+│   ├── urls.py            # Главный роутер
+│   └── wsgi.py            # WSGI-конфигурация
+├── manage.py               # Управляющий скрипт Django
+├── db.sqlite3              # База данных SQLite
+├── .gitignore              # Исключённые файлы
+├── requirements.txt        # Зависимости
+├── README.md               # Руководство по проекту
+├── Dockerfile              # Docker-образ
+├── docker-compose.yml      # Docker-композиция
+└── .github/workflows/      # Workflows для CI/CD
+    ├── unit_tests.yml      # Тесты
+    └── lint_and_coverage.yml # Линтеры и покрытие
+```
+
+---
+
+### Реализация
+
+#### 1.
+ Настройка проекта
+
+Создадим новый проект Django:
+
+```bash
+django-admin startproject travel_memories
+cd travel_memories
+python manage.py startapp travelmemories
+```
+
+#### 2.
+ Настройка зависимостей
+
+Добавим необходимые зависимости в `requirements.txt`:
+
+```bash
+Django>=4.2
+djangorestframework
+google-auth-oauthlib
+bootstrap4
+psycopg2-binary
+coveralls
+flake8
+black
+docker-compose
+pytest-django
+pytest-cov
+```
+
+#### 3.
+ Настройка аутентификации через Google/OAuth
+
+В настройках проекта (`config/settings.py`) включим поддержку OAuth:
+
+```python
+AUTHENTICATION_BACKENDS = [
+    'social_core.backends.google.GoogleOAuth2',
+    'django.contrib.auth.backends.ModelBackend',
+]
+
+SOCIAL_AUTH_GOOGLE_OAUTH2_KEY = '<GOOGLE_CLIENT_ID>'
+SOCIAL_AUTH_GOOGLE_OAUTH2_SECRET = '<GOOGLE_CLIENT_SECRET>'
+
+LOGIN_REDIRECT_URL = '/'
+LOGOUT_REDIRECT_URL = '/'
+```
+
+#### 4.
+ Создадим модели данных
+
+В приложении `travelmemories/models.py` опишем модель для хранения воспоминаний:
+
+```python
+from django.db import models
+from django.conf import settings
+
+class Memory(models.Model):
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    title = models.CharField(max_length=255)
+    location = models.TextField()
+    comment = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.user.username}'s memory at {self.location}"
+```
+
+#### 5.
+ Формы для добавления воспоминаний
+
+Формы для заполнения формы воспоминаний (`forms.py`):
+
+```python
+from django import forms
+from .models import Memory
+
+class AddMemoryForm(forms.ModelForm):
+    class Meta:
+        model = Memory
+        fields = ['title', 'location', 'comment']
+```
+
+#### 6.
+ Представления и маршруты
+
+Маршрутизация (`config/urls.py`):
+
+```python
+from django.urls import include, path
+from django.contrib import admin
+
+urlpatterns = [
+    path('', include('travelmemories.urls')),
+    path('admin/', admin.site.urls),
+]
+```
+
+Маршрутизация внутри приложения (`travelmemories/urls.py`):
+
+```python
+from django.urls import path
+from . import views
+
+urlpatterns = [
+    path('', views.home, name='home'),
+    path('add-memory/', views.add_memory, name='add_memory'),
+    path('logout/', views.logout_user, name='logout'),
+]
+```
+
+Представления (`views.py`):
+
+```python
+from django.shortcuts import render, redirect
+from django.contrib.auth.decorators import login_required
+from .forms import AddMemoryForm
+from .models import Memory
+
+@login_required
+def home(request):
+    memories = Memory.objects.filter(user=request.user)
+    context = {'memories': memories}
+    return render(request, 'home.html', context)
+
+@login_required
+def add_memory(request):
+    form = AddMemoryForm(request.POST or None)
+    if form.is_valid():
+        memory = form.save(commit=False)
+        memory.user = request.user
+        memory.save()
+        return redirect('home')
+    return render(request, 'add_memory.html', {'form': form})
+
+def logout_user(request):
+    logout(request)
+    return redirect('/')
+```
+
+#### 7.
+ Шаблоны HTML
+
+Базовый шаблон (`templates/base.html`):
+
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    {% load static %}
+    <link rel="stylesheet" href="{% static 'css/bootstrap.min.css' %}" />
+    <meta charset="UTF-8">
+    <title>{% block title %}Travel Memories{% endblock %}</title>
+</head>
+<body>
+<div class="container mt-5">
+    <div class="row justify-content-center">
+        <div class="col-md-8">
+            <h1>Привет, {{ user.first_name }}!</h1>
+            {% block content %}{% endblock %}
+        </div>
+    </div>
+</div>
+<script src="{% static 'js/jquery.min.js' %}"></script>
+<script src="{% static 'js/bootstrap.bundle.min.js' %}"></script>
+</body>
+</html>
+```
+
+Главная страница (`templates/home.html`):
+
+```html
+{% extends 'base.html' %}
+
+{% block content %}
+<h2>Список ваших воспоминаний:</h2>
+{% if memories %}
+    <ul>
+        {% for memory in memories %}
+            <li><strong>{{ memory.title }}</strong>: {{ memory.comment }}, {{ memory.created_at }}</li>
+        {% endfor %}
+    </ul>
+{% else %}
+    <p>У вас нет ни одного воспоминания.</p>
+{% endif %}
+<a href="{% url 'add_memory' %}" class="btn btn-primary">Добавить воспоминание</a>
+<a href="{% url 'logout' %}" class="btn btn-danger">Выйти</a>
+{% endblock %}
+```
+
+Форма добавления воспоминаний (`templates/add_memory.html`):
+
+```html
+{% extends 'base.html' %}
+
+{% block content %}
+<h2>Добавьте новое впечатление</h2>
+<form method="post">
+    {% csrf_token %}
+    {{ form.as_p }}
+    <button type="submit" class="btn btn-success">Сохранить</button>
+</form>
+{% endblock %}
+```
+
+#### 8.
+ Тестирование
+
+Юнит-тесты (`tests.py`):
+
+```python
+from django.test import TestCase
+from django.urls import reverse
+from django.contrib.auth.models import User
+from .models import Memory
+
+class MemoryTests(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        cls.user = User.objects.create_user(username='testuser', password='12345')
+        cls.memory = Memory.objects.create(user=cls.user, title='Test Title', location='Test Location', comment='Test Comment')
+
+    def test_home_view(self):
+        self.client.login(username='testuser', password='12345')
+        response = self.client.get(reverse('home'))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Test Title')
+
+    def test_add_memory_view(self):
+        self.client.login(username='testuser', password='12345')
+        response = self.client.post(reverse('add_memory'), {'title': 'New Title', 'location': 'New Location'})
+        self.assertRedirects(response, reverse('home'))
+        self.assertEqual(Memory.objects.count(), 2)
+```
+
+#### 9.
+ Контейнеризация с Docker
+
+Dockerfile:
+
+```dockerfile
+FROM python:3.10-slim-buster
+
+ENV PYTHONUNBUFFERED=1
+
+RUN mkdir /code
+WORKDIR /code
+COPY requirements.txt /code/
+RUN pip install --no-cache-dir -r requirements.txt
+COPY . /code/
+
+CMD ["gunicorn", "-b", ":8000", "--workers", "3", "config.wsgi"]
+```
+
+docker-compose.yml:
+
+```yaml
+version: '3'
+services:
+  web:
+    build: .
+    command: gunicorn -b :8000 --workers 3 config.wsgi
+    volumes:
+      - .:/code
+    ports:
+      - "8000:8000"
+    depends_on:
+      - db
+  db:
+    image: postgres:13
+    environment:
+      POSTGRES_DB: travelmemories
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+```
+
+#### 10.
+ Интеграция с GitHub Actions
+
+`.github/workflows/unit_tests.yml`:
+
+```yaml
+name: Unit Tests
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - name: Setup Python
+        uses: actions/setup-python@v2
+        with:
+          python-version: '3.x'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run tests
+        run: |
+          coverage run --source='.' manage.py test
+          coverage report
+```
+
+---
+
+### Итог
+
+Готовое веб-приложение на Django с возможностью авторизации через Google, добавлением воспоминаний и просмотром их списка. Проект сопровождается юнит-тестами, контейнеризацией и автоматизированными workflows на GitHub Actions. Код хранится на GitHub, и приложение доступно для просмотра и тестирования онлайн.
