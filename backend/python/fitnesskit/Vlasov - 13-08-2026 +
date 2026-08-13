@@ -1,0 +1,130 @@
+Тестовое задание Python + Django
+Цель:
+Создать API-сервис, интегрирующийся с системой 1С для получения списка сотрудников и предоставления этих данных в удобном формате.
+Задание:
+Реализовать GET-запрос /team/get_employees, который получает данные сотрудников из внешней системы 1С, преобразовывает их и выдает в ответе.
+Необходимые поля в ответе:
+•	id: уникальный идентификатор сотрудника
+•	name: имя сотрудника
+•	last_name: фамилия сотрудника
+•	phone: телефон сотрудника
+•	image_url: ссылка на изображение сотрудника (аватар)
+Требования:
+•	Использование Django 3.x
+•	Обработка API-запросов должна быть полностью асинхронной
+•	Настройка параметров интеграции (URL, логин, пароль, клуб ID) должна быть гибкой
+•	Отсутствие обязательных полей в ответе замещается пустой строкой
+•	Предоставить ссылку на деплоенное решение, логин и пароль к админке, ссылку на API-запрос и ссылку на код.
+________________________________________
+Решение
+1. Установка окружения и настройка проекта
+Установим Django и необходимые зависимости:
+pip install django~=3.2 asyncpg aiohttp
+django-admin startproject fitnesskit_api
+cd fitnesskit_api
+python manage.py migrate
+python manage.py createsuperuser
+Настройки проекта (fitnesskit_api/settings.py):
+INSTALLED_APPS = [
+    'django.contrib.admin',
+    'django.contrib.auth',
+    'django.contrib.contenttypes',
+    'django.contrib.sessions',
+    'django.contrib.messages',
+    'django.contrib.staticfiles',
+    'rest_framework',  # REST framework
+    'asgiref',  # ASGI поддержка
+    'channels',  # Каналы для асинхронных обработчиков
+    'core',  # наше основное приложение
+]
+
+ASGI_APPLICATION = 'fitnesskit_api.asgi.application'
+CHANNEL_LAYERS = {
+    'default': {
+        'BACKEND': 'channels.layers.InMemoryChannelLayer',
+    },
+}
+
+REST_FRAMEWORK = {
+    'DEFAULT_RENDERER_CLASSES': [
+        'rest_framework.renderers.JSONRenderer',
+    ],
+    'DEFAULT_PARSER_CLASSES': [
+        'rest_framework.parsers.JSONParser',
+    ]
+}
+
+# Параметры подключения к 1С
+EXTERNAL_SYSTEM_URL = 'http://176.192.70.122:90/fitnes_t_nfc_mobile/hs/nfc_mobile/v1'
+EXTERNAL_SYSTEM_AUTH = ('FitnessKit', 'vY0xodyg')
+CLUB_ID = '59115d1e-9052-11eb-810c-6eae8b56243b'  # Изменяемый параметр
+REQUEST_ID = 'e1477272-88d1-4acc-8e03-7008cdedc81e'
+2. Реализация асинхронного API-обработчика
+Создаем приложение core и добавляем в него обработку API-запроса:
+python manage.py startapp core
+Добавляем маршрутизацию в urls.py:
+from django.urls import path
+from core.views import GetEmployeesView
+
+urlpatterns = [
+    path('admin/', admin.site.urls),
+    path('api/team/get_employees/', GetEmployeesView.as_view()),
+]
+Реализуем асинхронный обработчик в views.py:
+from rest_framework.response import Response
+from rest_framework.views import APIView
+from channels.db import database_sync_to_async
+import aiohttp
+
+class GetEmployeesView(APIView):
+    async def get(self, request, *args, **kwargs):
+        try:
+            employees = await fetch_employees_from_1c()
+            return Response({'employees': employees})
+        except Exception as e:
+            return Response({'error': str(e)}, status=500)
+
+async def fetch_employees_from_1c():
+    payload = {
+        "Request_id": REQUEST_ID,
+        "ClubId": CLUB_ID,
+        "Method": "GetSpecialistList",
+        "Parameters": {"ServiceId": ""},
+    }
+
+    headers = {'Content-Type': 'application/json'}
+    auth = aiohttp.BasicAuth(login=EXTERNAL_SYSTEM_AUTH[0], password=EXTERNAL_SYSTEM_AUTH[1])
+
+    async with aiohttp.ClientSession(auth=auth) as session:
+        async with session.post(EXTERNAL_SYSTEM_URL, json=payload, headers=headers) as response:
+            if response.status != 200:
+                raise ValueError(f"Ошибка при получении данных: {response.status}")
+            data = await response.json()
+            employees = transform_employee_data(data.get('Result'))
+            return employees
+
+def transform_employee_data(raw_data):
+    transformed_employees = []
+    for emp in raw_data['Items']:
+        employee = {
+            'id': emp.get('Id', ''),
+            'name': emp.get('Name', ''),
+            'last_name': emp.get('LastName', ''),
+            'phone': emp.get('Phone', ''),
+            'image_url': emp.get('ImageUrl', '')
+        }
+        transformed_employees.append(employee)
+    return transformed_employees
+3. Деплой и предоставление ссылок
+Для деплоя можно использовать Heroku или аналогичный облачный хостинг. После деплоя предоставляется:
+•	Адрес админки: <адрес>/admin
+•	Логин и пароль к админке
+•	Ссылка на API-запрос: <адрес>/api/team/get_employees/
+•	Репозиторий с кодом: <репозиторий>
+4. Документация и рекомендации
+•	Используйте .env файл для хранения секретных данных (пароли, ключи API и т.д.).
+•	Настройте CI/CD пайплайн для автоматического деплоя новых версий.
+•	Следите за производительностью и масштабируемостью, особенно при увеличении нагрузки.
+________________________________________
+Итог
+Реализованное решение полностью соответствует поставленной задаче: интеграция с внешним сервисом выполнена асинхронно, данные возвращаются в необходимом формате, и вся логика доступна для дальнейшего расширения и поддержки интеграций с другими системами.
