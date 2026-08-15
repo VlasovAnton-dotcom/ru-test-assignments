@@ -1,0 +1,148 @@
+Vlasov - 15-08-2026 - Решение +
+## Решение практического задания
+
+### Архитектура решения
+
+**Основные компоненты:**
+* Flask для создания веб-сервера
+* Redis для хранения данных
+* SQLAlchemy для работы с Redis
+* PyTest для тестирования
+
+### Реализация
+
+```python
+from flask import Flask, request, jsonify
+import redis
+import datetime
+import re
+from urllib.parse import urlparse
+import os
+
+app = Flask(__name__)
+
+# Подключение к Redis
+redis_client = redis.StrictRedis(
+    host=os.getenv('REDIS_HOST', 'localhost'),
+    port=int(os.getenv('REDIS_PORT', 6379)),
+    db=0
+)
+
+# Парсер доменов
+def get_domain(url):
+    try:
+        parsed_url = urlparse(url)
+        domain = parsed_url.netloc
+        if domain.startswith('www.'):
+            domain = domain[4:]
+        return domain
+    except:
+        return None
+
+# Ресурс для загрузки ссылок
+@app.route('/visited_links', methods=['POST'])
+def add_links():
+    data = request.get_json()
+    if not data or 'links' not in data:
+        return jsonify({'status': 'error', 'message': 'Invalid data'}), 400
+    
+    current_time = int(datetime.datetime.now().timestamp())
+    for link in data['links']:
+        domain = get_domain(link)
+        if domain:
+            redis_client.sadd(current_time, domain)
+    
+    return jsonify({'status': 'ok'})
+
+# Ресурс для получения статистики
+@app.route('/visited_domains', methods=['GET'])
+def get_domains():
+    try:
+        from_time = int(request.args.get('from'))
+        to_time = int(request.args.get('to'))
+    except:
+        return jsonify({'status': 'error', 'message': 'Invalid timestamp'}), 400
+    
+    domains = set()
+    for timestamp in range(from_time, to_time + 1):
+        domains.update(redis_client.smembers(str(timestamp)))
+    
+    return jsonify({
+        'domains': list(domains),
+        'status': 'ok'
+    })
+
+if __name__ == '__main__':
+    app.run(debug=True)
+```
+
+### Тестирование
+
+```python
+import pytest
+from app import app as flask_app
+from redis import StrictRedis
+
+@pytest.fixture
+def client():
+    flask_app.config['TESTING'] = True
+    client = flask_app.test_client()
+    redis_client = StrictRedis(host='localhost', port=6379, db=1)
+    redis_client.flushdb()
+    return client
+
+def test_add_links(client):
+    response = client.post('/visited_links', json={
+        'links': [
+            'https://ya.ru',
+            'https://google.com'
+        ]
+    })
+    assert response.json['status'] == 'ok'
+
+def test_get_domains(client):
+    # Предварительно добавляем данные
+    client.post('/visited_links', json={
+        'links': ['https://ya.ru']
+    })
+    
+    response = client.get('/visited_domains', query_string={
+        'from': 0,
+        'to': int(datetime.datetime.now().timestamp())
+    })
+    assert 'ya.ru' in response.json['domains']
+```
+
+### Инструкции по запуску (README)
+
+```
+# Установка зависимостей
+pip install flask redis pytest
+
+# Запуск Redis
+docker run -d --name redis -p 6379:6379 redis
+
+# Запуск приложения
+python app.py
+
+# Запуск тестов
+pytest
+```
+
+### Особенности реализации
+
+* **Хранение данных** в Redis организовано по временным меткам
+* **Обработка ошибок** реализована через проверку статусов
+* **Валидация данных** выполняется на уровне API
+* **Тестирование** покрывает основные сценарии использования
+
+### Оптимизация
+
+* Для больших объемов данных можно использовать:
+  * Хеширование временных меток
+  * Сжатие данных
+  * Кэширование результатов запросов
+* Для повышения производительности:
+  * Использовать Redis кластер
+  * Внедрить асинхронную обработку
+  * Оптимизировать запросы к базе
