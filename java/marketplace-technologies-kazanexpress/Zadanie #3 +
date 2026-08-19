@@ -1,0 +1,91 @@
+Zadanie #3 - 19-08-2026
+Это классическое тестовое задание на проверку фундаментальных знаний Android-разработки: архитектуры (MVVM), работы с жизненным циклом компонентов и понимания UI-механик. 
+Ниже представлен подробный план реализации такого приложения на Kotlin с использованием современных библиотек Jetpack.
+1. Архитектура и зависимости
+Для выполнения требований по сохранению состояния при убийстве процесса лучше всего подойдет архитектура MVVM в связке с ViewModel и сохраненными стейтами (SavedStateHandle).
+Минимальный набор зависимостей (build.gradle.kts модуля app):
+kotlinКопировать
+// Lifecycle & ViewModel
+implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.8.7")
+implementation("androidx.lifecycle:lifecycle-livedata-ktx:2.8.7")
+implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
+implementation("androidx.activity:activity-ktx:1.9.3")
+implementation("androidx.fragment:fragment-ktx:1.8.6")
+
+// Navigation Component (для передачи ID статьи во фрагмент)
+implementation("androidx.navigation:navigation-fragment-ktx:2.8.0")
+implementation("androidx.navigation:navigation-ui-ktx:2.8.0")
+
+// RecyclerView
+implementation("androidx.recyclerview:recyclerview:1.3.2")
+
+// Загрузка изображений (стандарт для Google)
+implementation("com.github.bumptech.glide:glide:4.16.0")
+kapt("com.github.bumptech.glide:compiler:4.16.0")
+2. Модель данных и репозиторий
+Поскольку код ArticlesRepository() не предоставлен, опишем ожидаемую структуру:
+•	Article.kt: Дата-класс с полями id, title, description, imageUrl.
+•	ArticlesRepository.kt: Должен возвращать данные через корутины или Flow. Для эмуляции сохранения стейта при пересоздании процесса рекомендуется обернуть источник данных так, чтобы он мог отдавать кэш из базы (Room) или использовать механизм персистентности самого Paging/List.
+3. Главный экран (Список статей)
+Layout (fragment_articles_list.xml): Используем CoordinatorLayout. Внутри него — RecyclerView и BottomNavigationView. Чтобы BottomBar скрывался автоматически без написания сложной логики анимации вручную, достаточно привязать его к AppBarLayout или настроить поведение внутри CoordinatorLayout.
+Пример упрощенной настройки поведения скролла:
+xmlКопировать
+<androidx.coordinatorlayout.widget.CoordinatorLayout ...>
+    <androidx.recyclerview.widget.RecyclerView
+        android:id="@+id/articlesRecycler"
+        ... />
+        
+    <com.google.android.material.bottomnavigation.BottomNavigationView
+        android:id="@+id/bottomNav"
+        app:layout_behavior="@string/hide_bottom_view_on_scroll_behavior" />
+</androidx.coordinatorlayout.widget.CoordinatorLayout>
+Если требуется именно ручная анимация (например, кастомная скорость): В ArticleListFragment.kt инициализируем слушатель скролла.
+kotlinКопировать
+articlesRecycler.addOnScrollListener(object : RecyclerView.OnScrollListener() {
+    override fun onScrolled(recyclerView: RecyclerView, dx: Int, dy: Int) {
+        if (dy > 0 && bottomNav.isShown) { // Скролл вниз
+            bottomNav.animate().translationY(bottomNav.height.toFloat()).setDuration(200).start()
+        } else if (dy < 0 && !bottomNav.isShown) { // Скролл вверх
+            bottomNav.animate().translationY(0f).setDuration(200).start()
+        }
+    }
+})
+Важное замечание: При ручной анимации нужно сохранять флаг видимости бара в ViewModel, иначе после поворота экрана бар может "забыть" свое состояние.
+Адаптер и Кастомный ViewHolder: Требование «кастомная вью» означает, что верстка элемента списка должна быть вынесена в отдельный XML-файл, а логика биндинга — в свой класс.
+ArticleItemView.kt — наследник от ConstraintLayout (или другого контейнера). В нем описывается внешний вид карточки (заголовок, превью картинки). ArticlesAdapter.kt:
+kotlinКопировать
+class ArticlesAdapter(
+    private val onClick: (Article) -> Unit
+) : ListAdapter<Article, ArticlesAdapter.ArticleViewHolder>(DiffCallback()) {
+
+    class ArticleViewHolder(private val view: ArticleItemView) : RecyclerView.ViewHolder(view.rootView) {
+        fun bind(article: Article, onClick: (Article) -> Unit) {
+            view.bindData(article)
+            view.setOnClickListener { onClick(article) }
+        }
+    }
+    // ... onCreateViewHolder, onBindViewHolder, DiffUtil ...
+}
+4. Экран статьи (Детализация)
+При клике используем Safe Args Navigation Component. Передаем только articleId. Саму статью подтягиваем заново по ID во втором фрагменте — это стандарт практики (Single Source of Truth).
+Сохранение стейта (главное требование задания): Чтобы приложение восстанавливалось на том же месте скролла после убийства процесса системой (Low Memory Kill), нельзя полагаться только на оперативную память.
+1.	Позиция скролла: 
+o	Вариант А (рекомендуемый): Использовать Paging 3. Библиотека сама сохраняет позицию и восстанавливает её при поднятии процесса, если источником данных является Room или сервер с поддержкой ключей.
+o	Вариант Б (ручной): В ViewModel хранить объект val scrollPosition = MutableLiveData<SavedStateHandle>(). В фрагменте подписываться на него и в методе onSaveInstanceState(outState) дополнительно сохранять outState.putInt(KEY_SCROLL, recyclerView.computeVerticalScrollOffset()). Однако этого недостаточно для восстановления после полного убийства процесса. Поэтому необходимо дублировать критичные данные (позицию, список ID статей) в SharedPreferences или базу данных Room.
+2.	Контент открытой статьи: Во ViewModel второго экрана используется SavedStateHandle. Если процесс убит, аргументы навигации (navArgs) передаются заново, ViewModel запрашивает статью по ID, и пользователь видит тот же контент.
+3.	Навигационный стек: За восстановление того, какой фрагмент был открыт, отвечает сам Navigation Component и FragmentManager. Главное правило здесь — не передавать сами объекты статей между фрагментами (только их ID), передавая Parcelable объекты через бандлы рискованно, так как большие данные могут привести к падению TransactionTooLargeException.
+5. Обработка конфигурации (поворот экрана)
+Поворот экрана уничтожает Activity и Fragments. 
+•	ViewModel выживает благодаря провайдеру viewModels() / activityViewModels(). Данные списка останутся в памяти.
+•	Позиция RecyclerView сохраняется автоматически самим компонентом, если адаптер не меняется полностью. Но для гарантии (и требования убить родительский процесс) позиция обязательно фиксируется в SavedStateHandle или Room.
+Чек-лист самопроверки перед сдачей задачи:
+•	 Архитектура: Код презентера/логики не живет во View/Fragments. Используется MVVM.
+•	 Бэккилл (процесс килл): Приложение закрывается через свайп из Recents, открывается снова — список на той же позиции, открытая статья та же.
+•	 Ротация: Поворот экрана не сбрасывает скролл и не вызывает повторной загрузки всей страницы (если данные уже есть в VM).
+•	 Кастомная вью: ViewHolder использует собственную .kt/.xml вьюшку, а не просто раздувает layout в onCreateViewHolder.
+•	 Анимация: Bottom bar плавно уезжает за границу экрана (используется .animate().translationY(...) либо нативное поведение CoordinatorLayout).
+•	 Картинки: Использован Glide/Picasso с placeholder'ами и обработкой ошибок, интерфейс не ломается при быстрой прокрутке.
+•	 Код-стайл: Названия переменных осмысленные, нет захардкоженных строк в коде (все строки в strings.xml).
+
+
+
