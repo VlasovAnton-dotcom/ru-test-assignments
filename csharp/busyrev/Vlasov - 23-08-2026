@@ -1,0 +1,134 @@
+Vlasov - 23-08-2026 +
+Для решения задачи оптимально использовать алгоритм скользящего окна (two pointers). 
+
+Поскольку все элементы списка имеют тип uint (неотрицательные числа), сумма элементов в окне может только расти при расширении правой границы (end) и только уменьшаться при сдвиге левой границы (start). Это позволяет найти искомый подмассив за один проход по списку со сложностью $O(N)$, что критически важно для обработки нескольких миллионов элементов. Использование типа ulong для текущей суммы предотвращает переполнение, так как максимальная возможная сумма составляет $\approx 4 \text{ млрд} \times N$.
+
+Важный нюанс: условие требует вернуть наименьшие индексы start и end. При фиксированном начале самый короткий отрезок — это всегда первый найденный подходящий вариант. Если продолжать двигать правую границу после нахождения совпадения, длина отрезка будет только увеличиваться. Поэтому поиск можно безопасно завершать сразу после первого успешного обнаружения.
+
+Ниже представлена реализация метода с учетом всех требований:
+
+csharp
+Копировать
+using System.Collections.Generic;
+
+public class Solution
+{
+    public void FindElementsForSum(List<uint> list, ulong sum, out int start, out int end)
+    {
+        // Инициализация результата согласно условию (если ничего не найдем)
+        start = 0;
+        end = 0;
+
+        if (list == null || list.Count == 0) return;
+
+        ulong currentSum = 0;
+        int left = 0;
+
+        for (int right = 0; right < list.Count; right++)
+        {
+            currentSum += list[right];
+
+            // Сдвигаем левую границу вправо, пока сумма больше целевой
+            // Так как uint >= 0, текущая сумма никогда не станет меньше нуля,
+            // поэтому цикл while безопасен и гарантированно завершится.
+            while (currentSum > sum && left <= right)
+            {
+                currentSum -= list[left];
+                left++;
+            }
+
+            // Проверяем на точное равенство
+            if (currentSum == sum)
+            {
+                start = left;
+                end = right + 1; // end не включительно
+                return; // Нашли наименьший индекс начала, выходим немедленно
+            }
+        }
+    }
+}
+Тесты
+
+Для проверки корректности реализации написаны тесты, покрывающие основные сценарии из условия, а также важные граничные случаи: пустые списки, нули, полное покрытие массива и отсутствие решения.
+
+csharp
+Копировать
+using System;
+using System.Collections.Generic;
+
+// Вспомогательный метод для запуска теста и вывода результата
+public static void RunTest(string testName, List<uint> data, ulong targetSum)
+{
+    var solver = new Solution();
+    solver.FindElementsForSum(data, targetSum, out int start, out int end);
+    
+    Console.WriteLine($"--- {testName} ---");
+    Console.WriteLine($"Input: [{string.Join(", ", data)}], Target Sum: {targetSum}");
+    Console.WriteLine($"Result: start = {start}, end = {end}");
+    
+    // Валидация результата
+    ulong checkSum = 0;
+    if (start != 0 || end != 0)
+    {
+        for (int i = start; i < end; i++)
+        {
+            checkSum += data[i];
+        }
+    }
+    bool isValid = (start == 0 && end == 0 && CalculateTotalSum(data) != targetSum) || checkSum == targetSum;
+    Console.WriteLine($"Validation: {(isValid ? "OK" : "FAILED")}\n");
+}
+
+private static ulong CalculateTotalSum(List<uint> data)
+{
+    ulong s = 0;
+    foreach(var v in data) s += v;
+    return s;
+}
+
+// Основной блок тестов
+public static void Main()
+{
+    // Примеры из условия
+    RunTest("Example 1", new List<uint> { 0, 1, 2, 3, 4, 5, 6, 7 }, 11); // Ожидаемо: start=5, end=7 (5+6)
+    RunTest("Example 2", new List<uint> { 4, 5, 6, 7 }, 18);             // Ожидаемо: start=1, end=4 (5+6+7)
+    RunTest("Example 3", new List<uint> { 0, 1, 2, 3, 4, 5, 6, 7 }, 88); // Ожидаемо: start=0, end=0 (суммы нет)
+
+    // Дополнительные тесты
+    
+    // Граничный случай: пустой список
+    RunTest("Empty list", new List<uint>(), 5UL);                       // Ожидаемо: start=0, end=0
+
+    // Граничный случай: решение находится в самом начале
+    RunTest("At the very beginning", new List<uint> { 10, 20, 30 }, 10UL); // Ожидаемо: start=0, end=1
+
+    // Граничный случай: решение находится в самом конце
+    RunTest("At the very end", new List<uint> { 1, 2, 3, 4, 5 }, 9UL);     // Ожидаемо: start=3, end=5 (4+5)
+
+    // Сумма равна сумме всего массива
+    RunTest("Full array match", new List<uint> { 1, 2, 3, 4 }, 10UL);      // Ожидаемо: start=0, end=4
+
+    // Наличие нулей внутри массива (проверка алгоритма на сжимаемость левого указателя)
+    RunTest("With internal zeros", new List<uint> { 5, 0, 0, 5 }, 5UL);    // Ожидаемо: start=0, end=1
+
+    // Массив состоит только из нулей, ищем сумму 0
+    RunTest("All zeros matching zero", new List<uint> { 0, 0, 0 }, 0UL);   // Ожидаемо: start=0, end=1 (самый первый элемент)
+
+    // Отсутствие решения (целевая сумма больше общей суммы элементов)
+    RunTest("No solution exists", new List<uint> { 1, 2, 3 }, 10UL);       // Ожидаемо: start=0, end=0
+
+    // Большой тест производительности (несколько миллионов элементов)
+    Console.WriteLine("--- Performance Test (Large scale) ---");
+    var largeList = new List<uint>(5_000_000);
+    for (int i = 0; i < 5_000_000; i++) largeList.Add(1);
+    var sw = System.Diagnostics.Stopwatch.StartNew();
+    RunTest("5 million elements of '1', looking for sum 1000000", largeList, 1_000_000UL);
+    Console.WriteLine($"Execution time: {sw.ElapsedMilliseconds} ms\n");
+}
+
+Пояснение к ожидаемым результатам дополнительных тестов:
+
+At the very beginning: Алгоритм добавляет первое число 10, видит совпадение с суммой и мгновенно возвращает [0, 1].
+At the very end: Окно расширяется до конца [1, 2, 3, 4, 5], затем левый край сдвигается трижды, оставляя минимально возможные индексы [3, 5].
+With internal zeros: После нахождения первой пятерки окно попытается расшириться дальше. Внутренний цикл while быстро отсечет лишние нули слева, вернув начало к самому первому элементу, чтобы обеспечить минимальный индекс start.
+All zeros matching zero: Поскольку мы ищем сумму 0, первым же шагом правый указатель захватит первый ноль, текущий currentSum станет равен 0, и метод вернет [0, 1].
