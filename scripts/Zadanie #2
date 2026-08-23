@@ -1,0 +1,40 @@
+Zadanie #2 - Vlasov - 23-08-2026
+This Python script is a comprehensive utility for archiving external assignment links from a README.md file into local Markdown files and updating the documentation to point to these copies. It was designed to solve issues with broken or inaccessible remote resources by creating an offline snapshot.
+Core functionality
+The script operates through several distinct stages:
+1.	Parsing: It reads README.md and uses regular expressions to identify specific bullet list patterns (* [Title](url)). It distinguishes between internal Hexlet assignments (which are skipped), standalone unindented company entries, and indented actual assignment URLs. The parser tracks the current <summary> section header and optional nested company context to correctly categorize each link.
+2.	Filtering: Before attempting any network requests, it checks every URL against the SKIP_URL_PATTERNS blacklist (e.g., Notion, Dropbox, Google Drive) which require authentication or complex browser rendering that cannot be automated via simple HTTP GET.
+3.	Fetching content: For supported platforms, it dispatches specialized fetchers:
+o	GitHub repositories: Transforms standard GitHub UI URLs (blob, tree) into raw content URLs on raw.githubusercontent.com. It intelligently handles bare repos by trying common branch names like main and master.
+o	Gists: Uses the official GitHub API endpoint /gists/{id} to retrieve JSON metadata, then prioritizes .md files or resolves named anchors (like #file-solution-md) to get the correct snippet's raw_url.
+o	Google Docs: Utilizes the native export feature (export?format=txt) to pull plain text content without needing OAuth credentials.
+4.	Path resolution: It maps README sections (e.g., "Backend", "Frontend") to directory structures using the SECTION_TO_DIR dictionary. Company names and slugs are sanitized to remove forbidden filesystem characters (<>:"/\|?*), HTML markdown syntax (**bold**, ~~strikethrough~~), and truncated to safe lengths. This ensures unique paths like backend/company-x/slug-from-url.md.
+5.	Dry-run mode: When invoked with --dry-run, the script performs all parsing and path calculations but skips network I/O and disk writes. This allows users to preview exactly which new files will be created ([NEW]), which already exist ([EXISTS]), and which will be skipped due to platform limitations ([SKIP]).
+6.	Execution and locking: In normal run mode, it acquires an exclusive non-blocking lock on .download_assignments.lock using fcntl.flock(). This prevents race conditions if multiple developers or CI jobs attempt to update the repository simultaneously.
+7.	Updating README.md: After saving content locally, it replaces the original absolute external URL in the corresponding line of README.md with a relative path pointing to the newly saved file. All modified lines are collected first to avoid reading and writing the file inside the loop.
+8.	Reporting: Upon completion, it prints a detailed summary table showing counts for Saved, Already local, Skipped, and Failed downloads, followed by explicit lists of problematic URLs.
+Key architectural details
+Component	Detail
+Concurrency control	File-based advisory locking via `fcntl.LOCK_EX
+Rate limiting & Auth	Includes a 0.4-second sleep between requests to respect server limits. Supports GITHUB_TOKEN environment variable to bypass strict unauthenticated rate limits on the Gist API.
+Error handling	Gracefully degrades: returns None on HTTP errors (including printing [rate-limited] for status 429), catches JSON decode failures, and continues processing other links instead of aborting.
+Encoding safety	Reads source README as UTF-8 and saves fetched content with errors='replace' to handle malformed bytes gracefully during both input and output operations.
+Idempotency	Checks local_file.exists() before fetching; existing files are not overwritten, though their links in the README are still updated to ensure consistency.
+Usage example
+To perform a live synchronization:
+bashКопировать
+python scripts/download_assignments.py
+This will create directories under the repository root (e.g., backend/google/gist-abcd1234.md), download the contents, rewrite README.md, and print a final tally.
+To safely audit changes before applying them:
+bashКопировать
+python scripts/download_assignments.py --dry-run
+This outputs the planned actions—showing whether each URL would result in a [NEW] save, use an existing [EXISTS] file, or be marked [SKIP]—without making any modifications to the filesystem or sending authenticated API calls.
+Potential improvements
+While robust, the script could be further hardened:
+•	Anchor preservation: Currently strips fragments (#anchor) when checking existence. A future version could parse destination headings to validate deep links.
+•	Parallelization: Fetching dozens of large documents sequentially can be slow. Using concurrent.futures.ThreadPoolExecutor with controlled worker counts would significantly speed up runs while managing connection pools.
+•	Configurable retry logic: Implement exponential backoff retries specifically for transient 429 (Too Many Requests) or 5xx gateway errors rather than failing immediately.
+•	Checksum tracking: Store hashes of downloaded content alongside the files. On subsequent runs, this would allow skipping re-downloads of unchanged remote resources even if the target file doesn't yet exist locally (handling cases where manual edits were made).
+•	Enhanced logging: Integrate the built-in logging module with configurable verbosity levels (INFO vs DEBUG) to better trace redirect chains or unexpected response bodies.
+•	HTML-to-Markdown conversion: For pages that return HTML instead of raw Markdown (common with some corporate docs), integrate a library like markdownify or readability-lxml to convert the structure into clean MD format automatically.
+
