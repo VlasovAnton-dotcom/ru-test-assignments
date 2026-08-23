@@ -1,0 +1,36 @@
+Zadanie #1 - Vlasov - 23-08-2026
+The provided Python script is a static analysis tool designed to verify that all relative Markdown links within a repository point to existing files. It was created to catch errors after file paths were renamed to kebab-case in commit 75e2804, which left 20 assignments and the main README.md pointing to non-existent locations.
+Here is a detailed breakdown of its logic, architecture, and potential improvements:
+How the script works
+1.	Repository Root Detection: The variable ROOT determines the base directory for the search by going two levels up from the script's own location (scripts/check-relative-links.py). This assumes the project structure where scripts reside in a subdirectory alongside the documentation root.
+2.	File Discovery: Using os.walk(ROOT), it recursively traverses every folder starting from the root. It explicitly prunes any .git directories from the search path using dirnames[:] = [d for d in dirnames if d != '.git'] to avoid scanning version control metadata.
+3.	Markdown Filtering: Inside each directory, it iterates through filenames and processes only those ending with .md.
+4.	Link Extraction: For each file, it reads the content as UTF-8 (ignoring decoding errors via errors='ignore') and uses the regular expression r'$$$([^)\s]+)$' to find link targets inside standard Markdown syntax [text](target). 
+o	Limitation: This regex does not support reference-style links like [text][ref] or images prefixed with !.
+5.	Filtering External Links: Any target string beginning with prefixes defined in SKIP_PREFIXES—such as web URLs (http://, https://), email (mailto:), phone numbers (tel:), anchors (#), or HTML tags (<)—is skipped. Only internal filesystem paths are kept.
+6.	Path Normalization: Before checking existence, the raw URL fragment is cleaned up:
+o	urllib.parse.unquote() decodes percent-encoded characters (like %20 back to spaces).
+o	Query strings (?query=val) and fragments (#anchor) are stripped off.
+o	If the resulting target is an empty string, it is ignored.
+7.	Existence Check: The core validation happens here. It constructs an absolute path by joining the current markdown file's directory (dirpath) with the normalized target. Because these are intended to be relative links, no further resolution against ROOT occurs at this stage. os.path.exists() then verifies if the file is present on disk.
+8.	Reporting and Exit Code:
+o	It keeps counters for total checked links and broken ones.
+o	After the walk completes, it prints a summary. If any broken links were found, it lists them showing the source document path (relative to ROOT) and the specific broken target, then exits with status code 1. Otherwise, it prints "all resolve" and exits with 0.
+Architectural characteristics
+Aspect	Detail
+Scope & Assumptions	Checks local presence but does not validate anchor IDs (#section) within destination files. Does not follow symbolic links outside the tree unless OS defaults allow it. Ignores binary encoding issues due to errors='ignore'.
+Performance	Reads entire MD files into memory; efficient enough for typical docs repos. Could struggle on massive monorepos without streaming line-by-line processing.
+Portability	Relies on POSIX/Windows path normalization via os.path. Should work across common development environments.
+Potential enhancements
+While functional, the script can be hardened and expanded:
+•	Anchor Validation: Extend the check to parse the destination file and ensure the #fragment identifier exists (e.g., as a heading slug or custom ID).
+•	CI Integration: Add structured output formats like JSON or JUnit XML so continuous integration systems can easily ingest failures and annotate pull requests.
+•	Configurable Scope: Introduce command-line arguments (using argparse) to specify include/exclude glob patterns, change the exit-on-first-failure behavior, or override the detected ROOT.
+•	Symlink Handling: Explicitly decide whether to dereference symlinks using os.path.realpath() to prevent false positives when linked assets live outside the cloned repo.
+•	Reference-style Support: Update the parsing logic to handle [text][id] definitions and implicit references ([text][]).
+•	Image Link Coverage: Modify the regex to also capture image syntax ![](path) if validating media assets is required.
+•	Encoding Safety: Replace blanket errors='ignore' with explicit handling for mixed encodings (e.g., trying utf-8-sig first, then falling back to latin-1).
+To use the script as documented, run python3 scripts/check-relative-links.py from anywhere within the repository. A return code of 1 will cause most CI pipelines to fail the job, effectively preventing merged branches from containing dead internal documentation links.
+
+
+
