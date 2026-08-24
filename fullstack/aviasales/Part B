@@ -1,0 +1,423 @@
+Marketing MD - Vlasov - 24-08-2026
+Ниже представлена реализация описанного маркетингового блока. Архитектура разделена на клиентскую часть (React + TypeScript) и серверную (Node.js + Express + PostgreSQL). 
+Для управления состоянием выбран Redux Toolkit как наиболее распространенный стандарт, но логика легко переносится на Effector или StateX.
+1. Серверная часть (Node.js / Express / PostgreSQL)
+Структура проекта:
+Копировать
+/server
+|-- package.json
+|-- tsconfig.json
+|-- src/
+    |-- index.ts
+    |-- routes/
+        |-- subscribe.ts
+        |-- share.ts
+    |-- db/
+        |-- client.ts
+        |-- models.ts
+package.json:
+jsonКопировать
+{
+  "name": "marketing-block-server",
+  "scripts": {
+    "dev": "tsx watch src/index.ts"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.18.2",
+    "pg": "^8.11.3"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.11.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.3"
+  }
+}
+src/db/client.ts:
+typescriptКопировать
+import { Pool } from 'pg';
+
+export const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+});
+src/db/models.ts:
+typescriptКопировать
+// Простая таблица для примера. В реальности нужен уникальный индекс по email.
+export async function findUserByEmail(email: string) {
+  const { rows } = await import('./client').then(m => m.pool.query('SELECT id FROM users WHERE email = $1', [email]));
+  return rows[0];
+}
+
+export async function createUser(email: string) {
+  const { rows } = await import('./client').then(m => m.pool.query('INSERT INTO users(email) VALUES($1) RETURNING id', [email]));
+  return rows[0].id;
+}
+Примечание: перед запуском создайте таблицу в БД: CREATE TABLE users(id SERIAL PRIMARY KEY, email TEXT UNIQUE NOT NULL);
+src/routes/subscribe.ts:
+typescriptКопировать
+import { Router, Request, Response } from 'express';
+import { findUserByEmail, createUser } from '../db/models';
+
+const router = Router();
+
+router.post('/', async (req: Request, res: Response) => {
+  try {
+    const { email } = req.body;
+    
+    // Проверка существования пользователя
+    const existingUser = await findUserByEmail(email);
+    if (existingUser) {
+      return res.status(409).json({ error: 'ALREADY_EXISTS' });
+    }
+
+    const userId = await createUser(email);
+    res.status(201).json({ userId });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'SERVER_ERROR' });
+  }
+});
+
+export default router;
+src/routes/share.ts:
+typescriptКопировать
+import { Router, Request, Response } from 'express';
+
+const router = Router();
+
+// Эндпоинт-заглушка. В реальном проекте здесь может быть запись в аналитику.
+router.post('/', (_req: Request, res: Response) => {
+  res.status(200).json({ success: true });
+});
+
+export default router;
+src/index.ts:
+typescriptКопировать
+import express from 'express';
+import cors from 'cors';
+import subscribeRouter from './routes/subscribe';
+import shareRouter from './routes/share';
+import dotenv from 'dotenv';
+
+dotenv.config();
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+app.use('/api/subscribe', subscribeRouter);
+app.use('/api/share', shareRouter);
+
+const PORT = process.env.PORT || 4000;
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
+2. Клиентская часть (React + TypeScript + Redux Toolkit)
+Структура компонентов:
+Копировать
+/src
+|-- store/
+|   |-- index.ts
+|   |-- marketingSlice.ts
+|-- api/
+|   |-- marketingApi.ts
+|-- components/
+|   |-- SubscriptionBlock.tsx
+|   |-- ShareButtons.tsx
+|   |-- FinalScreen.tsx
+|-- App.tsx
+src/store/marketingSlice.ts:
+typescriptКопировать
+import { createSlice, PayloadAction, createAsyncThunk } from '@reduxjs/toolkit';
+
+interface MarketingState {
+  email: string;
+  isEmailValid: boolean;
+  serverError: null | 'INVALID_FORMAT' | 'ALREADY_EXISTS' | 'SERVER_ERROR';
+  blockDisabled: boolean;
+  
+  sharingInProgress: boolean;
+  sharedSuccessfully: boolean;
+  manualShareClaim: boolean;
+  shareError: null | 'NOT_SHARED' | 'SERVER_ERROR';
+  
+  finalUserId: string | null;
+}
+
+const initialState: MarketingState = {
+  email: '',
+  isEmailValid: false,
+  serverError: null,
+  blockDisabled: false,
+  
+  sharingInProgress: false,
+  sharedSuccessfully: false,
+  manualShareClaim: false,
+  shareError: null,
+  
+  finalUserId: null,
+};
+
+export const submitEmail = createAsyncThunk(
+  'marketing/submitEmail',
+  async (email: string, { rejectWithValue }) => {
+    const response = await fetch('/api/subscribe', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email }),
+    });
+
+    if (!response.ok) {
+      const data = await response.json();
+      return rejectWithValue(data.error || 'SERVER_ERROR');
+    }
+    const data = await response.json();
+    return data.userId;
+  }
+);
+
+export const registerShare = createAsyncThunk(
+  'marketing/registerShare',
+  async (_, { rejectWithValue }) => {
+    const response = await fetch('/api/share', {
+      method: 'POST',
+    });
+    if (!response.ok) {
+      return rejectWithValue('SERVER_ERROR');
+    }
+    return true;
+  }
+);
+
+const slice = createSlice({
+  name: 'marketing',
+  initialState,
+  reducers: {
+    setEmail(state, action: PayloadAction<string>) {
+      state.email = action.payload;
+      state.isEmailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(action.payload);
+      state.serverError = null;
+    },
+    claimManualShare(state) {
+      state.manualShareClaim = true;
+    },
+    resetForm() {
+      return initialState;
+    },
+  },
+  extraReducers: builder => {
+    builder
+      .addCase(submitEmail.pending, state => {
+        state.blockDisabled = true;
+      })
+      .addCase(submitEmail.fulfilled, (state, action) => {
+        state.blockDisabled = true;
+        state.finalUserId = action.payload;
+      })
+      .addCase(submitEmail.rejected, (state, action) => {
+        state.blockDisabled = false;
+        state.serverError = action.payload as string;
+      })
+      
+      .addCase(registerShare.pending, state => {
+        state.sharingInProgress = true;
+        state.shareError = null;
+      })
+      .addCase(registerShare.fulfilled, state => {
+        state.sharingInProgress = false;
+        state.sharedSuccessfully = true;
+        state.shareError = null;
+      })
+      .addCase(registerShare.rejected, (state, action) => {
+        state.sharingInProgress = false;
+        state.shareError = action.payload as string;
+      });
+  },
+});
+
+export const { setEmail, claimManualShare, resetForm } = slice.actions;
+export default slice.reducer;
+src/store/index.ts:
+typescriptКопировать
+import { configureStore } from '@reduxjs/toolkit';
+import marketingReducer from './marketingSlice';
+
+export const store = configureStore({
+  reducer: {
+    marketing: marketingReducer,
+  },
+});
+
+export type RootState = ReturnType<typeof store.getState>;
+export type AppDispatch = typeof store.dispatch;
+src/api/marketingApi.ts (опционально, если не использовать RTK Query):
+typescriptКопировать
+// В данном примере запросы инкапсулированы прямо в createAsyncThunk выше.
+// Для масштабирования лучше вынести их сюда через baseQuery из @reduxjs/toolkit/query.
+src/components/SubscriptionBlock.tsx:
+typescriptКопировать
+import React from 'react';
+import { useSelector, useDispatch } from 'react-redux';
+import { RootState, AppDispatch } from '../store';
+import { setEmail, submitEmail } from '../store/marketingSlice';
+
+export const SubscriptionBlock: React.FC = () => {
+  const dispatch = useDispatch<AppDispatch>();
+  const { email, isEmailValid, serverError, blockDisabled } = useSelector((state: RootState) => state.marketing);
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (isEmailValid) {
+      dispatch(submitEmail(email));
+    }
+  };
+
+  return (
+    <form onSubmit={handleSubmit}>
+      <input
+        type="email"
+        value={email}
+        disabled={blockDisabled}
+        placeholder="Введите ваш E-mail"
+        onChange={(e) => dispatch(setEmail(e.target.value))}
+      />
+      {!isEmailValid && email.length > 0 && <span style={{ color: 'red' }}>Неверный формат почты</span>}
+      {serverError === 'ALREADY_EXISTS' && <span style={{ color: 'red' }}>Этот адрес уже зарегистрирован</span>}
+      {serverError === 'SERVER_ERROR' && <span style={{ color: 'red' }}>Ошибка сервера</span>}
+      <button type="submit" disabled={!isEmailValid || blockDisabled}>Подписаться</button>
+    </form>
+  );
+};
+src/components/ShareButtons.tsx:
+typescriptКопировать
+import React from 'react';
+import { useSelector, useDispatch } from 'react-redux';
+import { RootState, AppDispatch } from '../store';
+import { registerShare } from '../store/marketingSlice';
+import { claimManualShare } from '../store/marketingSlice';
+
+const socialNetworks = [
+  { name: 'VK', url: 'https://vk.com/share.php?url=' },
+  { name: 'Telegram', url: 'https://t.me/share/url?url=' },
+  { name: 'Twitter', url: 'https://twitter.com/intent/tweet?url=' },
+] as const;
+
+export const ShareButtons: React.FC = () => {
+  const dispatch = useDispatch<AppDispatch>();
+  const { sharedSuccessfully, sharingInProgress, shareError, manualShareClaim } = useSelector((state: RootState) => state.marketing);
+
+  const currentUrl = encodeURIComponent(window.location.href);
+
+  const handleShareClick = (networkUrl: string) => {
+    window.open(networkUrl + currentUrl, '_blank');
+    // Оптимистичное обновление состояния можно добавить при необходимости
+  };
+
+  if (sharedSuccessfully) {
+    return null; // Кнопки скрываются после успешного шеринга
+  }
+
+  return (
+    <div>
+      {shareError === 'SERVER_ERROR' && <span style={{ color: 'red' }}>Ошибка сохранения шеринг-статуса</span>}
+      {manualShareClaim && !sharedSuccessfully && shareError !== 'SERVER_ERROR' && (
+        <span style={{ color: 'red' }}>Сначала нажмите кнопку соцсети, чтобы поделиться.</span>
+      )}
+      
+      <div>
+        {socialNetworks.map(net => (
+          <button key={net.name} onClick={() => handleShareClick(net.url)} disabled={sharingInProgress}>
+            Поделиться в {net.name}
+          </button>
+        ))}
+      </div>
+      
+      <button onClick={() => dispatch(claimManualShare())} disabled={sharingInProgress}>
+        Я поделился
+      </button>
+      
+      <button 
+        onClick={() => dispatch(registerShare())} 
+        disabled={sharingInProgress || !manualShareClaim}
+      >
+        Продолжить
+      </button>
+    </div>
+  );
+};
+src/components/FinalScreen.tsx:
+typescriptКопировать
+import React from 'react';
+import { useSelector } from 'react-redux';
+import { RootState } from '../store';
+
+export const FinalScreen: React.FC = () => {
+  const userId = useSelector((state: RootState) => state.marketing.finalUserId);
+
+  if (!userId) return null;
+
+  return (
+    <div>
+      <h2>Спасибо!</h2>
+      <p>Вы успешно подписались и поделились страницей.</p>
+      <p>Ваш ID пользователя: {userId}</p>
+      {/* Сюда рендерится контент финального экрана */}
+    </div>
+  );
+};
+src/App.tsx:
+typescriptКопировать
+import React from 'react';
+import { Provider } from 'react-redux';
+import { store } from './store';
+import { SubscriptionBlock } from './components/SubscriptionBlock';
+import { ShareButtons } from './components/ShareButtons';
+import { FinalScreen } from './components/FinalScreen';
+
+function App() {
+  const userId = useSelector((state: RootState) => state.marketing.finalUserId);
+
+  return (
+    <Provider store={store}>
+      {userId ? (
+        <FinalScreen />
+      ) : (
+        <>
+          <SubscriptionBlock />
+          <ShareButtons />
+        </>
+      )}
+    </Provider>
+  );
+}
+
+export default App;
+3. Инструкция по запуску
+Сервер:
+1.	Убедитесь, что у вас установлены Node.js и PostgreSQL.
+2.	Создайте базу данных и таблицу:
+sqlКопировать
+CREATE DATABASE marketing_block;
+\c marketing_block
+CREATE TABLE users(id SERIAL PRIMARY KEY, email TEXT UNIQUE NOT NULL);
+3.	Скопируйте код серверной части в папку server.
+4.	В корне папки server выполните команды:
+bashКопировать
+npm install
+# Создайте файл .env с переменной DATABASE_URL=postgresql://user:pass@localhost:5432/marketing_block
+npm run dev
+Сервер запустится на порту 4000.
+Клиент:
+1.	Скопируйте код клиентской части в папку (например, client).
+2.	Выполните установку зависимостей:
+bashКопировать
+npm install
+3.	Так как CORS настроен широко, а API-запросы идут на /api/..., локальный дев-сервер React должен проксировать запросы на бэкенд. Добавьте в package.json клиента строку: "proxy": "http://localhost:4000"
+4.	Запустите фронтенд:
+bashКопировать
+npm start
+Деплой:
+•	Бэкенд: Легко деплоится на Railway, Render или Fly.io. Потребуется связать его с работающим инстансом PostgreSQL.
+•	Фронтенд: Статика собирается командой npm run build и выкладывается на Vercel, Netlify или GitHub Pages. Если домены фронта и бэка разные, убедитесь, что заголовки CORS на сервере разрешают нужный Origin.
