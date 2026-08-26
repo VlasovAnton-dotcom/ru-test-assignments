@@ -1,0 +1,87 @@
+Zadanie #2 - Vlasov - 26-08-2026
+Help GigaChat :-) 
+The provided script is a robust Python utility designed to automate the migration of external assignment links from a README.md file into local Markdown files within a repository. It parses structured lists, downloads content from supported platforms (GitHub repositories and gists, Google Docs), saves them locally with unique names, updates the README to point to these new copies, and prevents concurrent execution.
+
+Below is a detailed breakdown of its architecture and functionality:
+
+1. Configuration and Constants
+Paths: The script dynamically determines paths for the main README.md, the repository root (REPO_ROOT), and a lock file (.download_assignments.lock) used to prevent parallel runs.
+Section Mapping (SECTION_TO_DIR): A dictionary maps human-readable section titles in the README (e.g., "Backend", "Python") to corresponding directory names where assignments will be stored.
+Skip Patterns (SKIP_URL_PATTERNS): A list of domain substrings identifies URLs that cannot be reliably fetched without authentication or browser interaction (e.g., Notion, Dropbox, Yandex Disk). These are ignored during processing.
+Authentication: An optional GITHUB_TOKEN environment variable can be set to increase API rate limits when fetching GitHub data.
+2. HTTP Helpers
+
+The core network logic resides in http_get(). It uses standard library modules (urllib.request) to perform GET requests. Crucially, it sets a custom User-Agent header and injects the Authorization token if one is available. Error handling specifically checks for HTTP 429 (rate limiting) responses.
+
+3. Content Fetchers
+
+This module handles platform-specific extraction methods:
+
+fetch_github_repo(): Resolves various URL formats—blob links to specific files, tree links to directories, bare repositories—and attempts to fetch their contents via the raw.githubusercontent.com CDN. For folders, it first tries to find a nested README.md.
+fetch_gist(): Uses the official GitHub Gist API to retrieve JSON metadata. It intelligently selects which file to download: prioritizing .md files, then falling back to a user-specified anchor link (#file-...), and finally using the very first file in the gist.
+fetch_google_docs(): Utilizes the public export endpoint (?format=txt) to convert a Google Document into plain text suitable for saving as an .md file.
+fetch_external(): Acts as a simple dispatcher, routing incoming URLs to the appropriate specialized function based on their hostname.
+4. Naming Helpers
+
+To ensure downloaded files have safe and predictable filenames:
+
+sanitize_dir(): Cleans company or folder names by stripping markdown formatting characters (*, ~~) and illegal filesystem symbols (<>:"/\\|?*).
+slug_from_url(): Generates a concise filename slug. It extracts meaningful parts like repo names or branch paths while avoiding generic defaults like README.md. For example, a path inside a monorepo becomes hyphenated (backend/developer → backend-developer).
+_looks_like_assignment_url(): Prevents false positives by filtering out corporate homepages or marketing sites, ensuring only resource-like domains (gists, docs, dropbox) are processed.
+5. README Parser
+
+The parser assumes a strict structure typical for Hexlet-style roadmaps:
+
+Sections wrapped in <summary> tags.
+Companies marked as unindented bullet points linking to internal pages (./company-name).
+Assignments listed as indented bullets (exactly four spaces before *).
+It returns a clean list of dictionaries containing the line index, context (section/company), title, and target URL for each valid entry.
+6. Path Determination
+local_path_for(): Constructs the full destination path following the pattern {repo_root}/{section_dir}/{company_dir}/{slug}.md. Standalone entries (not under a company heading) use a derived pseudo-company name extracted from the URL itself.
+readme_link(): Converts absolute system paths into relative POSIX-compatible strings encoded for safety, generating correct [text](./path/to/file.md) references for insertion back into the README.
+7. Main Execution Flow (run)
+
+The central orchestrator manages state flags (saved, skipped, failed, already_exist) and performs several critical steps:
+
+Locking: Acquires an exclusive non-blocking OS-level lock (fcntl.flock) to avoid race conditions if multiple instances start simultaneously.
+Dry-run Mode: If invoked with --dry-run, the script simulates all operations. It prints planned actions but makes zero network requests and writes no files, allowing users to preview changes safely.
+Processing Loop: Iterates through parsed entries. Before downloading, it validates against skip patterns and deduplicates both existing disk files and collisions occurring within the current run.
+File I/O: Creates parent directories as needed (mkdir(parents=True)) and atomically writes the retrieved content to disk.
+In-place Update: Modifies the lines array directly at the original indices rather than re-parsing the document. This preserves surrounding whitespace, comments, and unrelated markup perfectly.
+Reporting: Prints a final summary table categorized by status and provides verbose logs for any skipped unsupported hosts or failed fetches.
+Usage Instructions
+
+Prerequisites
+
+Python 3.10 or higher (required for type union syntax str | None).
+Network access to allowed endpoints (GitHub, Google Docs).
+Optional: Set export GITHUB_TOKEN="your_token_here" to bypass anonymous GitHub API rate limits.
+
+Execution
+Run the script from your terminal:
+
+bash
+Копировать
+python scripts/download_assignments.py
+
+For a dry run to see what would happen without making changes:
+
+bash
+Копировать
+python scripts/download_assignments.py --dry-run
+
+Expected Directory Structure After Run
+Assignments will be organized hierarchically. For instance, a backend task for a fictional company "Acme" might end up here:
+
+Копировать
+repository_root/
+├── README.md          # Links updated to ./backend/acme/slug.md
+└── backend/
+    └── acme/
+        └── slug.md    # Downloaded assignment content
+
+Important Considerations
+
+Formatting Preservation: Since replacements occur strictly at character offsets defined by line_idx, do not manually edit the indentation or spacing of bulleted lists between parsing and writing unless you intend to break the mapping.
+Content Limitations: Fetched HTML-heavy sources may require manual cleanup after being saved as plaintext Markdown.
+Idempotency: Re-running the script is safe; already-downloaded files will simply trigger an update to the README link pointing to the same local location.
