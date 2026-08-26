@@ -1,0 +1,28 @@
+Vlasov - Zadanie #1 - 26-08-2026
+help GigaChat
+This Python script is designed to validate that all relative Markdown links within a repository point to existing files. It was created as a safeguard after paths were renamed to kebab-case in commit 75e2804, which left many internal references broken.
+
+How the script works
+Repository root detection: The variable ROOT establishes the project's base directory by moving up two levels from the script's location (scripts/check-relative-links.py). This ensures it scans the entire codebase regardless of where it is invoked from.
+File discovery: Using os.walk(), the script recursively traverses every folder starting from ROOT. It explicitly prunes any .git directories from the search and ignores non-Markdown files, focusing only on those ending with .md.
+Link extraction: For each file found, it reads the content (using UTF-8 encoding but ignoring decode errors) and uses the regular expression r'$$$([^)\s]+)$' to find potential link targets inside standard Markdown syntax [text](target). 
+Note: This regex has limitations; for example, it will fail if the URL contains unbalanced parentheses or whitespace characters that are not properly encoded.
+Filtering external resources: Before checking existence, the script skips several types of URIs defined in SKIP_PREFIXES: absolute web URLs (http://, https://), email links (mailto:), phone numbers (tel:), page anchors (#), and HTML-style tags (<).
+Target normalization: Relative paths are cleaned using urllib.parse.unquote() to handle percent-encoded characters (like %20 for spaces). Query strings (?) and fragment identifiers (#) are stripped so the check focuses purely on the filesystem path.
+Filesystem verification: It constructs an absolute path by joining the target with the current Markdown file's directory (dirpath) and normalizing it. Then, os.path.exists() verifies whether the resulting file actually exists on disk.
+Reporting and exit codes: After scanning all files, it prints a summary. If one or more broken links are detected, it lists them showing the source file and the specific raw string that failed, then exits with status code 1. If no issues are found, it prints "all resolve" and exits with status code 0.
+Usage notes
+Execution: Run directly via python3 scripts/check-relative-links.py. Because it relies on explicit exit codes, it integrates seamlessly into CI/CD pipelines (such as GitHub Actions or GitLab CI); a non-zero exit will automatically mark the job as failed.
+Limitations:
+False negatives: Links pointing to dynamically generated assets (e.g., /docs/guide/index.html produced by MkDocs during a build) will be flagged as broken because they don't exist as static files yet.
+Case sensitivity: On case-sensitive filesystems (common in Linux environments), a mismatch like linking to Guide.md when the actual file is guide.md will cause a failure.
+Fragment-only checks: While fragments (the part after #) are ignored for validation, this means the script won't detect cases where the anchor itself is misspelled if the base file exists.
+Extensibility suggestions:
+To catch typos in section headers, you could parse the linked Markdown files to extract their heading IDs.
+To support other formats, add extensions like .rst or .ipynb to the filename filter.
+To reduce false positives for dynamic sites, consider adding a whitelist of known output folders (e.g., site/, build/).
+Example run scenarios
+Scenario	Console Output	Exit Code
+All good	checked 42 relative links<br>all resolve	0
+Broken reference	checked 42 relative links<br><br>1 broken:<br>  docs/tutorial.md: old-name-guide.md	1
+Mixed valid/invalid	checked 128 relative links<br><br>3 broken:<br>  README.md: contributing.md<br>  api/spec.md: authentication%20flow.md<br>  guides/setup.md: ../images/logo.png	1
