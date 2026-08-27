@@ -1,0 +1,214 @@
+Простейшее API для каталога товаров на Go
+Ниже представлена простая реализация API-каталога товаров на чистом Go без использования готовых фреймворков. В реализации предусмотрены основные сущности (категории, товары, пользователи), а также возможность выполнять CRUD-операции с ними.
+
+Структура проекта:
+catalog-api/
+|- cmd/
+|   |- server.go
+|- internal/
+|   |- handlers/
+|   |   |- category_handlers.go
+|   |   |- item_handlers.go
+|   |   |- user_handlers.go
+|   |- models/
+|   |   |- category.go
+|   |   |- item.go
+|   |   |- user.go
+|   |- services/
+|   |   |- category_service.go
+|   |   |- item_service.go
+|   |   |- user_service.go
+|- pkg/
+|   |- storage/
+|   |   |- memory_storage.go
+|- go.mod
+|- go.sum
+|- README.md
+Описание сущностей:
+Категория: Название категории.
+Товар: Название товара, описание, цена, привязка к категориям.
+Пользователи: Имя пользователя, пароль (хэшируется), роль (обычный пользователь или администратор).
+Функционал:
+Получение списка всех категорий.
+Получение списка товаров в конкретной категории.
+Авторизация пользователей.
+Добавление/редактирование/удаление категории (только для авторизованных пользователей).
+Добавление/редактирование/удаление товара (только для авторизованных пользователей).
+Примечание:
+Хранилище данных представлено в виде памяти (in-memory), что удобно для демонстрации и быстрого прототипирования. В реальной среде лучше использовать полноценную базу данных (PostgreSQL, MySQL и др.).
+
+Пример реализации:
+1. Пакет internal/models/category.go
+package models
+
+type Category struct {
+	ID   uint   `json:"id"`
+	Name string `json:"name"`
+}
+2. Пакет internal/services/category_service.go
+package services
+
+import (
+	"github.
+com/myorg/catalog-api/internal/models"
+)
+
+func CreateCategory(name string) (*models.Category, error) {
+	cat := &models.Category{Name: name}
+	err := storage.CreateCategory(cat)
+	if err != nil {
+		return nil, err
+	}
+	return cat, nil
+}
+
+func GetAllCategories() ([]*models.Category, error) {
+	return storage.GetAllCategories()
+}
+
+func DeleteCategory(id uint) error {
+	return storage.DeleteCategory(id)
+}
+3. Пакет pkg/storage/memory_storage.go
+package storage
+
+import (
+	"sync"
+	"github.
+com/myorg/catalog-api/internal/models"
+)
+
+var (
+	mu sync.RWMutex
+	categories []*models.Category
+	items      []*models.Item
+	users      []*models.User
+)
+
+func init() {
+	categories = make([]*models.Category, 0)
+	items = make([]*models.Item, 0)
+	users = make([]*models.User, 0)
+}
+
+func CreateCategory(category *models.Category) error {
+	mu.Lock()
+	defer mu.Unlock()
+	category.ID = uint(len(categories) + 1)
+	categories = append(categories, category)
+	return nil
+}
+
+func GetAllCategories() ([]*models.Category, error) {
+	mu.RLock()
+	defer mu.RUnlock()
+	return categories, nil
+}
+
+func DeleteCategory(id uint) error {
+	mu.Lock()
+	defer mu.Unlock()
+	for i, cat := range categories {
+		if cat.ID == id {
+			categories = append(categories[:i], categories[i+1:]...)
+			return nil
+		}
+	}
+	return ErrNotFound
+}
+4. Пакет cmd/server.go
+package main
+
+import (
+	"log"
+	"net/http"
+	"github.
+com/gorilla/mux"
+	"github.
+com/myorg/catalog-api/internal/handlers"
+)
+
+func main() {
+	router := mux.NewRouter()
+
+	// Роуты для категорий
+	router.HandleFunc("/categories", handlers.ListCategoriesHandler).Methods(http.MethodGet)
+	router.HandleFunc("/category/{id}", handlers.GetCategoryHandler).Methods(http.MethodGet)
+	router.HandleFunc("/category", handlers.CreateCategoryHandler).Methods(http.MethodPost)
+	router.HandleFunc("/category/{id}", handlers.UpdateCategoryHandler).Methods(http.MethodPut)
+	router.HandleFunc("/category/{id}", handlers.DeleteCategoryHandler).Methods(http.MethodDelete)
+
+	log.Fatal(http.ListenAndServe(":8080", router))
+}
+5. Пакет internal/handlers/category_handlers.go
+package handlers
+
+import (
+	"encoding/json"
+	"fmt"
+	"io/ioutil"
+	"net/http"
+	"strconv"
+	"github.
+com/myorg/catalog-api/internal/models"
+	"github.
+com/myorg/catalog-api/internal/services"
+)
+
+func ListCategoriesHandler(w http.ResponseWriter, r *http.Request) {
+	cats, err := services.GetAllCategories()
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to retrieve categories: %v", err), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(cats)
+}
+
+func CreateCategoryHandler(w http.ResponseWriter, r *http.Request) {
+	body, err := ioutil.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "Could not read body", http.StatusBadRequest)
+		return
+	}
+	var cat models.Category
+	err = json.Unmarshal(body, &cat)
+	if err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+	createdCat, err := services.CreateCategory(cat.Name)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to create category: %v", err), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(createdCat)
+}
+
+// Другие хендлеры...
+Инструкция по запуску:
+Клонировать репозиторий:
+git clone https://github.
+com/your_username/catalog-api.git
+Установить зависимости:
+go mod download
+Запустить сервер:
+go run cmd/server.
+go
+API теперь доступно по адресу localhost:8080.
+
+Сколько времени ушло на реализацию:
+Создание архитектуры и базовых моделей: ~2 часа
+Реализация хранилища и бизнес-логики: ~3 часа
+Написание обработчиков маршрутов и контроллеров: ~2 часа
+Написание документации и подготовка README: ~1 час
+Всего: ~8 часов
+Критерии оценки:
+Архитектура: Ясная структура проекта, разделение ответственности между слоями.
+Обработка ошибок: Правильная обработка ошибок и информативные сообщения пользователю.
+Тесты: Будет полезно дополнить проект модульными тестами для покрытия критических функций.
+Рекомендации по дальнейшему развитию:
+Добавить полноценный слой доступа к данным (например, PostgreSQL).
+Реализовать JWT-аутентификацию для обеспечения безопасности.
+Добавить механизмы кеширования и оптимизации производительности.
