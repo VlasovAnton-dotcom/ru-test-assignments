@@ -1,0 +1,85 @@
+Для выполнения задания предлагаю следующий подход:
+
+Шаги реализации:
+Добавление API-контроллера для обработки запросов через HTTP.
+Реализация логики расчёта налога согласно правилам Гётеборга.
+Исправление возможных ошибок в исходном коде.
+Перенос налоговых правил в конфигурационный файл (JSON/XML).
+Документирование дополнительных вопросов и предложений по улучшению.
+Что сделаем за 4 часа:
+Создадим точку входа через HTTP-запросы.
+Проверим корректность расчетов на основе списка дат.
+Подготовим структуру конфигурации для хранения внешних правил налогообложения.
+Дополнительную работу выполним позже:
+Оптимизация производительности.
+Расширение функционала для поддержки нескольких городов.
+Интеграция с внешним хранилищем данных.
+1. Создание REST API контроллера
+Добавляем простой Flask-приложение для приема POST-запросов со списком дат въезда автомобиля.
+from flask import Flask, request, jsonify
+app = Flask(__name__)
+
+@app.route('/calculate_tax', methods=['POST'])
+def calculate_tax():
+    # Получаем даты въезда из запроса
+    data = request.json.get('dates')
+    
+    # Вызываем функцию расчета налога
+    total_tax = compute_total_tax(data)
+    
+    return jsonify({'total_tax': total_tax})
+2. Логика расчета налога
+Реализуем основную логику расчета налога исходя из заданных временных интервалов и исключений.
+import datetime
+
+def is_chargeable(date):
+    """Проверка, подлежит ли дата налогообложению"""
+    if date.weekday() >= 5 or date.month == 7:
+        return False
+    return True
+
+def get_tax_amount(time):
+    """Возвращает размер налога в зависимости от времени дня"""
+    hour = time.hour
+    minute = time.minute
+    if hour < 6 or hour > 18 or (hour == 18 and minute >= 30): return 0
+    elif hour == 6 and minute <= 29: return 8
+    elif hour == 6: return 13
+    elif hour == 7: return 18
+    elif hour == 8 and minute <= 29: return 13
+    elif hour >= 8 and hour <= 14: return 8
+    elif hour == 15 and minute <= 29: return 13
+    elif hour == 15: return 18
+    else: return 13
+
+def compute_total_tax(dates):
+    tax_per_day = {}
+    for dt_str in dates:
+        dt = datetime.datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S")
+        
+        if not is_chargeable(dt):
+            continue
+            
+        day_key = dt.date()
+        amount = get_tax_amount(dt.time())
+        
+        # Правило единственного платежа за 60 мин
+        last_entry_time = tax_per_day.get(day_key, {}).get("last_entry", None)
+        if last_entry_time and abs((dt - last_entry_time).seconds // 60) <= 60:
+            current_max = tax_per_day[day_key].get("max_tax", 0)
+            tax_per_day[day_key]["max_tax"] = max(current_max, amount)
+        else:
+            tax_per_day.setdefault(day_key, {"max_tax": 0})["max_tax"] += amount
+            tax_per_day[day_key]['last_entry'] = dt
+    
+    total_tax = sum([min(day['max_tax'], 60) for day in tax_per_day.values()])
+    return total_tax
+3. Тестирование
+Используя приведенный вами набор дат, проверяем правильность вычислений.
+test_dates = [
+    "2013-01-14 21:00:00",
+    "2013-01-15 21:00:00",
+    ...
+]
+print(compute_total_tax(test_dates))
+
