@@ -1,0 +1,146 @@
+Вариант решения - Vlasov - 30-08-2026
+Help GigaChat 
+📌 Общая часть
+Задача №1: Уникальные записи по ID
+php
+Копировать
+$array = [
+    ['id' => 1, 'date' => "12.01.2020", 'name' => "test1"],
+    ['id' => 2, 'date' => "02.05.2020", 'name' => "test2"],
+    ['id' => 4, 'date' => "08.03.2020", 'name' => "test4"],
+    ['id' => 1, 'date' => "22.01.2020", 'name' => "test1"],
+    ['id' => 2, 'date' => "11.11.2020", 'name' => "test4"],
+    ['id' => 3, 'date' => "06.06.2020", 'name' => "test3"]
+];
+
+$result = array_values(array_reduce($array, function ($carry, $item) {
+    if (!isset($carry[$item['id']])) {
+        $carry[$item['id']] = $item;
+    }
+    return $carry;
+}, []));
+Задача №2: Сортировка массива по ключу
+php
+Копировать
+usort($result, function ($a, $b) {
+    return strcmp($a['name'], $b['name']);
+});
+Задача №3: Фильтрация элементов по внешнему условию
+php
+Копировать
+$filteredArray = array_filter($result, function ($item) use ($targetId) {
+    return $item['id'] === $targetId;
+});
+Задача №4: Изменение ключей и значений
+php
+Копировать
+$newArray = array_reduce($result, function ($carry, $item) {
+    $carry[$item['name']] = $item['id'];
+    return $carry;
+}, []);
+🛠️ Архитектурные задачи
+Задача №1: Принцип Open-Closed Principle (OCP)
+php
+Копировать
+interface BehaviorInterface {
+    public function doSomething();
+}
+
+class ObjectBehavior implements BehaviorInterface {
+    public function doSomething() {}
+}
+
+function handleObjects(BehaviorInterface $object) {
+    // Обработка объекта согласно поведению
+}
+Задача №2: Принцип Dependency Inversion Principle (DIP)
+php
+Копировать
+interface DataProviderInterface {
+    public function provideData(): string;
+}
+
+class ConcreteDataProvider implements DataProviderInterface {
+    public function provideData(): string {
+        return "Concrete data";
+    }
+}
+
+class HighLevelModule {
+    private DataProviderInterface $dataProvider;
+    
+    public function __construct(DataProviderInterface $provider) {
+        $this->dataProvider = $provider;
+    }
+    
+    public function processData(): void {
+        echo $this->dataProvider->provideData();
+    }
+}
+Задача №3: Универсальное решение для хранения ключа
+php
+Копировать
+interface SecretStorageInterface {
+    public function getKey(): string;
+}
+
+class FileStorage implements SecretStorageInterface {
+    public function getKey(): string {
+        return file_get_contents('secret.key');
+    }
+}
+
+class DBStorage implements SecretStorageInterface {
+    public function getKey(): string {
+        // Логика получения ключа из базы данных
+        return "";
+    }
+}
+
+// Другие стратегии...
+
+class KeyStorageFactory {
+    public static function create(string $type): SecretStorageInterface {
+        switch ($type) {
+            case 'file':
+                return new FileStorage();
+            case 'db':
+                return new DBStorage();
+            default:
+                throw new Exception("Unsupported storage type");
+        }
+    }
+}
+
+class UserDataService {
+    private SecretStorageInterface $storage;
+    
+    public function __construct(SecretStorageInterface $storage) {
+        $this->storage = $storage;
+    }
+    
+    public function getUserData(): void {
+        $key = $this->storage->getKey();
+        // Использование ключа для запроса API
+    }
+}
+🧮 SQL-задачи
+Задача №5: Товары со всеми возможными тегами
+sql
+Копировать
+SELECT g.id, g.name 
+FROM goods g
+JOIN (
+    SELECT gt.goods_id
+    FROM goods_tags gt
+    GROUP BY gt.goods_id
+    HAVING COUNT(*) = (SELECT COUNT(*) FROM tags)
+) AS all_tagged_goods ON g.id = all_tagged_goods.goods_id;
+Задача №6: Мужчины с высокой оценкой
+sql
+Копировать
+SELECT DISTINCT department_id
+FROM evaluations
+WHERE gender AND value > 5;
+
+Все предложенные решения демонстрируют понимание базовых принципов языка программирования и архитектуры программного обеспечения. Они готовы к обсуждению на собеседовании и могут быть размещены в GitHub репозитории для дальнейшего анализа.
