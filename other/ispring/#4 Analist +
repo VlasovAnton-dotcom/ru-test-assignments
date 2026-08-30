@@ -1,0 +1,171 @@
+#4 Analist - Vlasov - 30-08-2026 +
+Ниже представлено подробное техническое решение тестового задания. В качестве стека выбран Go (версия 1.21+), PostgreSQL и стандартный роутер net/http. Этот выбор продиктован высокой производительностью, строгой типизацией языка и отсутствием необходимости в сторонних фреймворках для реализации простого REST API.
+Проектирование базы данных
+Для хранения задач достаточно одной таблицы:
+sqlКопировать
+CREATE TABLE todos (
+    id SERIAL PRIMARY KEY,
+    text TEXT NOT NULL CHECK (char_length(text) <= 1000),
+    is_done BOOLEAN DEFAULT FALSE NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW() NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW() NOT NULL
+);
+•	id: уникальный идентификатор задачи.
+•	text: текст задачи с ограничением длины на уровне БД (CHECK), дублирующим логику приложения.
+•	is_done: флаг выполнения. По умолчанию false.
+•	created_at / updated_at: временные метки для отслеживания изменений и сортировки.
+Структура проекта (Go)
+Проект следует принципам чистой архитектуры для легкого масштабирования и тестирования:
+Копировать
+/todo-service
+├── cmd/
+│   └── server/              # Точка входа (main.go)
+│       └── main.go
+├── internal/
+│   ├── api/                 # HTTP-обработчики (Handlers)
+│   │   ├── handlers.go
+│   │   └── middleware.go    # Логирование ошибок, CORS
+│   ├── domain/              # Бизнес-логика и модели
+│   │   ├── todo.go          # Структуры Todo + DTO (In/Out)
+│   │   └── service.go       # Интерфейс Service и реализация
+│   ├── repository/          # Работа с базой данных
+│   │   └── postgres.go      # Реализация интерфейса Repository через pgx/sqlx
+│   └── errors.go            # Кастомные ошибки (ErrNotFound, ErrValidation)
+├── migrations/              # SQL-файлы миграций
+│   └── 00001_create_todos.up.sql
+├── go.mod
+├── go.sum
+├── Dockerfile
+├── docker-compose.yml
+└── README.md
+Модели данных (DTO)
+Разделение структур для чтения из БД и для обмена по API позволяет не засвечивать лишние поля (например, внутренние ID или технические timestamps).
+Внутренняя модель:
+goКопировать
+type Todo struct {
+    ID        int64
+    Text      string
+    IsDone    bool
+    CreatedAt time.Time
+    UpdatedAt time.Time
+}
+Ответ API при создании:
+goКопировать
+type CreateTodoResponse struct {
+    ID     int64  `json:"id"`
+    Text   string `json:"text"`
+    IsDone bool   `json:"is_done"`
+}
+Ответ API для списков:
+goКопировать
+type TodoListItem struct {
+    ID     int64  `json:"id"`
+    Text   string `json:"text"`
+    IsDone bool   `json:"is_done"`
+}
+REST API Endpoints
+Метод	URL	Описание	Тело запроса	Коды ответа
+POST	/todos	Добавить задачу	{"text": "Купить хлеб"}	201, 400
+PATCH	/todos/{id}/done	Пометить выполненной	пусто	204, 404
+GET	/todos?status=active	Список невыполненных	—	200
+DELETE	/todos/{id}	Удалить задачу	—	204, 404
+GET	/todos?status=archived	(Опц.) Архивные задачи	—	200
+Обработка статуса: фильтрация списка реализована через query-параметр status со значениями active (по умолчанию), archived или all.
+Примеры запросов и ответов
+1. Создание задачи Запрос:
+httpКопировать
+POST /todos HTTP/1.1
+Content-Type: application/json
+
+{"text": "Написать документацию к сервису"}
+Успешный ответ (201 Created):
+jsonКопировать
+{
+  "id": 1,
+  "text": "Написать документацию к сервису",
+  "is_done": false
+}
+Ошибка превышения лимита текста (400 Bad Request):
+jsonКопировать
+{ "error": "текст задачи превышает лимит в 1000 символов" }
+2. Получение активных задач Запрос: GET /todos Ответ (200 OK):
+jsonКопировать
+[
+  { "id": 1, "text": "Написать документацию", "is_done": false },
+  { "id": 3, "text": "Настроить CI/CD", "is_done": false }
+]
+3. Пометить как выполненную Запрос: PATCH /todos/1/done Ответ: 204 No Content (без тела). Если задача не найдена: 404 Not Found { "error": "task not found" }.
+4. Удаление Запрос: DELETE /todos/1 Ответ: 204 No Content.
+Обработка ошибок и валидация
+1.	Длина текста: Проверяется дважды. Сначала на уровне входящего JSON-запроса (библиотека валидатора, например, от go-playground/validator), затем принудительно внутри бизнес-логики перед записью в БД. При нарушении возвращается 400 Bad Request.
+2.	Некорректный ID: Если путь содержит /todos/abc, роутер вернет 404 до попадания в хендлер. Если формат верный, но записи нет (хендлер вызвал repo.GetByID) — возвращается кастомная ошибка ErrNotFound, которая маппится в 404 Not Found.
+3.	Неподдерживаемые методы: Для существующих эндпоинтов настроен обработчик метода, возвращающий 405 Method Not Allowed.
+4.	Системные ошибки: Любые непредвиденные ошибки БД приводят к возврату 500 Internal Server Error без раскрытия деталей пользователю.
+Дополнительное задание: API-тесты (Postman)
+Для автоматизации создается коллекция Postman со следующей структурой папок:
+•	Папка: Creating Todos
+o	Тест 1: Успешное создание задачи. Проверка кода 201, наличия id в теле и соответствия текста.
+o	Тест 2: Превышение лимита 1000 символов. Отправка строки длиной 1001 символ. Проверка кода 400 и ключа error в ответе.
+•	Папка: Managing State
+o	Тест 3: Пометить существующую задачу выполненной. Проверка кода 204.
+o	Тест 4: Попытка пометить несуществующую задачу (id: 999999). Проверка кода 404.
+•	Папка: Filtering Lists
+o	Тест 5: Получить список активных задач после создания нескольких (активных и архивных). Утверждение (Assertion): длина массива равна количеству только активных задач.
+o	Тест 6: Получить архив (status=archived). Утверждение: все элементы имеют "is_done": true.
+•	Папка: Deletion
+o	Тест 7: Удаление существующей задачи. Код 204.
+o	Тест 8: Повторное удаление той же задачи. Код 404.
+Коллекция дополняется скриптами в секции Tests на JavaScript для проверки кодов статусов и структуры JSON, а также переменными окружения (base_url) для переключения между локальной средой и стендом.
+Контейнеризация (Docker)
+Dockerfile: Используется многоэтапная сборка для минимизации образа.
+dockerfileКопировать
+# Этап сборки
+FROM golang:1.21-bullseye AS builder
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o todo-server ./cmd/server/main.go
+
+# Финальный этап
+FROM gcr.io/distroless/base-debian12
+WORKDIR /app
+COPY --from=builder /app/todo-server .
+EXPOSE 8080
+ENTRYPOINT ["./todo-server"]
+Использование дистрибутива Distroless исключает шелл и пакетный менеджер, что значительно снижает поверхность атаки.
+docker-compose.yml: Позволяет запустить связку сервиса и СУБД одной командой.
+yamlКопировать
+version: '3.8'
+services:
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: pass
+      POSTGRES_DB: tododb
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+  app:
+    build: .
+    ports:
+      - "8080:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      - DB_DSN=postgres://user:pass@db:5432/tododb?sslmode=disable
+volumes:
+  pgdata:
+Примечание: для depends_on требуется простейший healthcheck для контейнера db (например, ожидание готовности порта 5432).
+Инструкция по развертыванию (для README)
+1.	Склонировать репозиторий.
+2.	Установить зависимости: go mod tidy.
+3.	Запустить инфраструктуру: docker-compose up -d.
+4.	Применить миграции (через golang-migrate/migrate или вручную).
+5.	Собрать и запустить приложение: go run ./cmd/server/main.go или собрать бинарник.
+6.	Сервис будет доступен по адресу http://localhost:8080.
+7.	Для запуска тестов импортировать коллекцию Postman и нажать кнопку «Run».
+Такой подход полностью покрывает требования технического задания, обеспечивает чистую архитектуру, безопасность за счет статической типизации и минимальной поверхности атаки в контейнере, а также предоставляет готовую базу для автоматизированного регрессионного тестирования.
