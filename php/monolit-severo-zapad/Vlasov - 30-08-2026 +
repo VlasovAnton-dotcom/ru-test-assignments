@@ -1,0 +1,147 @@
+Решение задачи - Помощь Алиса AI - 30-08-2026
+### Решение задания 1: Список новостей
+
+**Сниппет getNews.php:**
+```php
+<?php
+$parentId = $modx->resource->id; // Получаем ID текущего ресурса
+$news = $modx->getCollection('modResource', [
+    'parent' => $parentId,
+    'published' => 1
+]);
+
+return $news;
+?>
+```
+
+**Шаблон списка новостей (Fenom):**
+```html
+<div class="page">
+    ...
+    <div class="news">
+        {set $news = $modx->runSnippet('getNews')}
+        {foreach $news as $item}
+            <div class="news-item">
+                <img class="news-item-preview" src="{$item.tv.preview_image}">
+                <div class="news-item-title">{$item.pagetitle}</div>
+                <div class="news-item-text">
+                    {strip_tags($item.content)|truncate:200}
+                </div>
+                <div class="news-item-pubdate">
+                    {date('d.m.Y', strtotime($item.publishedon))}
+                </div>
+            </div>
+        {/foreach}
+    </div>
+    ...
+</div>
+```
+
+### Решение задания 2: Мобильное меню
+
+**HTML структура:**
+```html
+<div class="mobile-menu">
+    <button class="menu-toggle">
+        <i class="fa fa-bars"></i>
+    </button>
+    <div class="menu-container">
+        <!-- Пункты меню будут загружены сюда -->
+    </div>
+</div>
+```
+
+**CSS стили:**
+```css
+.mobile-menu {
+    position: fixed;
+    top: 0;
+    left: -300px;
+    width: 300px;
+    height: 100%;
+    background: #fff;
+    transition: left 0.3s ease;
+}
+
+.mobile-menu.active {
+    left: 0;
+}
+
+.menu-container {
+    padding: 20px;
+}
+
+.menu-item {
+    margin-bottom: 15px;
+}
+
+.menu-item a {
+    display: block;
+    padding: 10px;
+    text-decoration: none;
+    color: #333;
+}
+
+.menu-sub {
+    margin-left: 20px;
+    opacity: 0;
+    transform: translateY(-10px);
+    transition: all 0.3s ease;
+}
+
+.menu-sub.active {
+    opacity: 1;
+    transform: translateY(0);
+}
+```
+
+**JavaScript (menu.js):**
+```javascript
+document.addEventListener('DOMContentLoaded', () => {
+    const menuContainer = document.querySelector('.menu-container');
+    const menuToggle = document.querySelector('.menu-toggle');
+    const menu = document.querySelector('.mobile-menu');
+
+    // Загрузка меню
+    fetch('/api/getMenu')
+        .then(response => response.json())
+        .then(data => {
+            menuContainer.innerHTML = buildMenu(data);
+        });
+
+    // Функция построения меню
+    function buildMenu(items) {
+        return items.map(item => {
+            return `
+                <div class="menu-item">
+                    <a href="${item.url}">${item.title}</a>
+                    ${item.children ? buildSubMenu(item.children) : ''}
+                </div>
+            `;
+        }).join('');
+    }
+
+    // Функция построения подменю
+    function buildSubMenu(items) {
+        return `
+            <div class="menu-sub">
+                ${buildMenu(items)}
+            </div>
+            <span class="submenu-toggle">▶</span>
+        `;
+    }
+
+    // Обработка открытия подменю
+    menuContainer.addEventListener('click', e => {
+        if (e.target.classList.contains('submenu-toggle')) {
+            const submenu = e.target.previousElementSibling;
+            submenu.classList.toggle('active');
+        }
+    });
+
+    // Обработка открытия/закрытия меню
+    menuToggle.addEventListener('click', () => {
+        menu.classList.toggle('active');
+    });
+
+    // Закрытие меню
