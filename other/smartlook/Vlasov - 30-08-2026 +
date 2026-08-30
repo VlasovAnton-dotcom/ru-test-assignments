@@ -1,0 +1,167 @@
+Решение задачи - Vlasov - 30-08-2026
+Для выполнения тестового задания Smartlook необходимо модифицировать файл movie_streaming_app/lib/main.dart. Задача состоит в том, чтобы заменить заглушку _startServer() на функцию, которая обходит дерево виджетов Flutter, собирает их геометрические параметры и цвета, а затем отдает этот массив через локальный HTTP-сервер.
+
+Алгоритм решения
+Доступ к дереву элементов: В чистом Dart получить доступ к рендер-объектам нельзя. Для обхода дерева используется пакет flutter_driver_extension (или встроенные инструменты фреймворка), который позволяет зарегистрировать глобальную функцию-снапшоттер (WidgetInspectorService.setPubRootDirectories и debugEnhanceBuildTimelineArguments). Однако самый надежный способ для такой задачи — использовать WidgetsBinding.instance.addPostFrameCallback, внутри которого можно безопасно обращаться к контекстам.
+Обход дерева: Рекурсивная функция проходит по всем элементам типа RenderObject текущего контекста. Чтобы не захватывать служебные элементы (например, SizedBox без рендера или невидимые прокси-виджеты), фильтрация происходит по наличию renderBox?.hasSize == true.
+Сбор координат: Координаты верхнего левого угла (top, left) вычисляются с помощью метода renderBox.localToGlobal(Offset.zero). Размеры берутся напрямую из свойств size.width и size.height.
+Определение цвета:
+Если текущий виджет — текстовый (RenderParagraph), берется его стиль text.style.color.
+Если это контейнерный виджет (RenderDecoratedBox), берется свойство decoration.color.
+Поскольку один экранный элемент может состоять из нескольких слоев RenderObject, алгоритм должен подниматься вверх по родительской цепочке до тех пор, пока не найдет первый непрозрачный цвет фона или текста.
+Формирование JSON: Данные каждого валидного элемента упаковываются в словарь { "top": ..., "left": ..., "width": ..., "height": ..., "color": "#AARRGGBB" }. Список этих словарей сериализуется стандартной библиотекой dart:convert.
+HTTP-сервер: Используется библиотека dart:io (HttpServer.bind). Обработчик запроса проверяет путь (например, /tree) и возвращает полученный JSON с заголовком Content-Type: application/json.
+Реализация кода (main.dart)
+
+Ниже представлен код функции _startServer и вспомогательных методов, которые нужно поместить в класс _MovieStreamingAppState.
+
+dart
+Копировать
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
+
+// ... существующий код класса _MovieStreamingAppState ...
+
+  Future<void> _startServer() async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 9000);
+    
+    // Отлавливаем кадр после первого полного построения UI
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _processRequest(server);
+    });
+  }
+
+  void _processRequest(HttpServer server) {
+    server.listen((HttpRequest request) async {
+      if (request.uri.path == '/tree') {
+        try {
+          final treeJson = await _captureElementTree(context);
+          
+          request.response
+            ..headers.contentType = ContentType.json
+            ..write(jsonEncode(treeJson))
+            ..close();
+        } catch (e) {
+          request.response
+            ..statusCode = HttpStatus.internalServerError
+            ..write('{"error": "$e"}')
+            ..close();
+        }
+      } else {
+        request.response.statusCode = HttpStatus.notFound;
+        await request.response.close();
+      }
+    });
+  }
+
+  Future<List<Map<String, dynamic>>> _captureElementTree(BuildContext context) async {
+    final List<Map<String, dynamic>> elements = [];
+
+    void traverse(RenderObject? object) {
+      if (object == null) return;
+
+      // Фильтруем только те объекты, которые имеют физический размер на экране
+      final renderBox = object as RenderBox?;
+      if (renderBox != null && renderBox.hasSize && !renderBox.debugNeedsLayout) {
+        
+        final globalPos = renderBox.localToGlobal(Offset.zero);
+        final colorHex = _findVisibleColor(object);
+
+        // Добавляем только если удалось определить цвет (чтобы избежать шума от пустых контейнеров)
+        if (colorHex != null) {
+          elements.add({
+            'top': globalPos.dy,
+            'left': globalPos.dx,
+            'width': renderBox.size.width,
+            'height': renderBox.size.height,
+            'color': colorHex,
+          });
+        }
+      }
+      
+      // Рекурсивно обходим детей
+      object.visitChildren(traverse);
+    }
+
+    // Начинаем обход от BuildOwner (корня текущего кадра)
+    final rootRenderObject = RendererBinding.instance.renderView;
+    if (rootRenderObject != null) {
+      traverse(rootRenderObject);
+    }
+
+    return elements;
+  }
+
+  String? _findVisibleColor(RenderObject obj) {
+    RenderObject? current = obj;
+    
+    while (current != null) {
+      // Проверяем текстовые элементы
+      if (current is RenderParagraph) {
+        final style = current.text.style;
+        if (style?.color != null) {
+          return '#${style!.color!.value.toRadixString(16).padLeft(8, '0').toUpperCase()}';
+        }
+      }
+
+      // Проверяем задекорированные боксы (Container, DecoratedBox)
+      if (current is RenderDecoratedBox) {
+        final decoration = current.decoration;
+        if (decoration is BoxDecoration && decoration.color != null) {
+          return '#${decoration.color!.value.toRadixString(16).padLeft(8, '0').toUpperCase()}';
+        }
+      }
+
+      // Можно добавить проверку для иконок (IconPainter), но часто они рисуются цветом родителя-текста
+      
+      current = current.parent as RenderObject?;
+    }
+    return null;
+  }
+
+Важное замечание по производительности:
+Полный рекурсивный обход всего RenderView может захватить тысячи служебных объектов (каркас Scrollable, внутренние слои CompositedTransformFollower и т.д.). Это сделает JSON огромным и замедлит сервер. На практике перед добавлением элемента в список стоит проверять:
+
+Является ли объект видимым (renderBox.paintBounds.isEmpty).
+Имеет ли он семантическую метку (describeForError() содержит осмысленное имя виджета, например «RepaintBoundary»).
+Находится ли его прямоугольник в пределах экрана.
+Как проверить решение
+
+Запустите приложение на реальном устройстве или эмуляторе (iOS/Android). Сборки Flutter Web работают иначе (через CanvasKit/DOM), поэтому структура рендера там отличается, и данный метод может потребовать адаптации под dart:html.
+
+Перейдите на любой экран приложения (например, страницу со списком фильмов).
+
+Откройте браузер на компьютере, подключенном к той же сети Wi-Fi (или используйте localhost, если запускаете веб-версию), и перейдите по адресу:
+http://<IP_УСТРОЙСТВА>:9000/tree
+
+Например: http://192.168.1.15:9000/tree.
+
+Браффер должен вернуть JSON-массив. Пример фрагмента данных для карточки фильма:
+
+json
+Копировать
+[
+  {
+    "top": 156.0,
+    "left": 16.0,
+    "width": 171.0,
+    "height": 256.0,
+    "color": "#FF2D2D2D"
+  },
+  {
+    "top": 160.0,
+    "left": 20.0,
+    "width": 163.0,
+    "height": 24.0,
+    "color": "#FFFFFFFF"
+  }
+]
+
+Типичные ошибки при реализации:
+
+Координаты относительно родителя вместо экрана: Использование localToGlobal(Offset.zero) решает эту проблему, переводя координаты в пространство физического экрана.
+Зависимость от состояния сборки: Нельзя собирать данные во время анимации перехода маршрута. Код обернут в addPostFrameCallback, что гарантирует выполнение после завершения этапа layout и paint.
+Дублирование узлов: Метод visitChildren обходит всех потомков. Если не фильтровать прозрачные объекты и объекты без размера, одна кнопка попадет в JSON десятками раз (как фон, как слой тени, как текст, как кликабельная область). Предложенный фильтр по hasSize и наличие color решают эту проблему.
