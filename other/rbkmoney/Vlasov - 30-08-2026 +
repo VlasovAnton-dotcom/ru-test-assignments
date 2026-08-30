@@ -1,0 +1,235 @@
+Реализация модели
+python
+import random
+from math import floor
+from collections import Counter
+from typing import List, Callable, Dict, Any
+
+# --- Константы модели ---
+NUM_TRADERS = 60
+DEAL_MIN = 5
+DEAL_MAX = 10
+EXCLUDE_PERCENT = 0.20
+ERROR_PROB = 0.05
+
+PAYOFF_CC = 4  # оба честны
+PAYOFF_DC = 5  # я жульничаю, оппонент честен
+PAYOFF_CD = 1  # я честен, оппонент жульничает
+PAYOFF_DD = 2  # оба жульничают
+
+
+class Trader:
+    def __init__(self, strategy_name: str, strategy_func: Callable[[Any], bool], memory: Dict[str, Any]):
+        self.strategy_name = strategy_name
+        self._strategy_func = strategy_func
+        self.memory = memory  # состояние стратегии (история, флаги и т.п.)
+        self.total_profit = 0
+        self.reset_year()
+
+    def reset_year(self):
+        self.total_profit = 0
+        # Сброс состояния стратегии на начало года
+        if self.strategy_name == "ушлый":
+            self.memory["move_index"] = 0
+            self.memory["cheated_ever"] = False
+        elif self.strategy_name == "хитрец":
+            self.memory["last_opponent_move"] = None
+        elif self.strategy_name == "злопамятный":
+            self.memory["betrayed"] = False
+
+    def decide(self, opponent: "Trader") -> bool:
+        """
+        Возвращает True = сотрудничество, False = жульничество.
+        Учитывает 5% вероятность ошибки.
+        """
+        correct_decision = self._strategy_func(self, opponent)
+        if random.random() < ERROR_PROB:
+            # Ошибка: инвертируем решение
+            return not correct_decision
+        return correct_decision
+
+    def add_profit(self, amount: int):
+        self.total_profit += amount
+
+
+# --- Стратегии ---
+
+def altruist_strategy(self: Trader, _: Trader) -> bool:
+    return True  # всегда сотрудничает
+
+def cheater_strategy(self: Trader, _: Trader) -> bool:
+    return False  # всегда жульничает
+
+def cunning_strategy(self: Trader, opponent: Trader) -> bool:
+    # Начинает с сотрудничества, потом повторяет ход оппонента
+    if self.memory["last_opponent_move"] is None:
+        return True
+    return self.memory["last_opponent_move"]
+
+def unpredictable_strategy(self: Trader, _: Trader) -> bool:
+    return random.choice([True, False])
+
+def vengeful_strategy(self: Trader, opponent: Trader) -> bool:
+    # Сотрудничает, пока не обманули. После этого постоянно жульничает.
+    if self.memory["betrayed"]:
+        return False
+    return True
+
+def shrewd_strategy(self: Trader, opponent: Trader) -> bool:
+    # Фиксированная последовательность: C, D, C, C. Затем: если хоть раз обманули — как кидала, иначе — как хитрец.
+    seq = [True, False, True, True]  # C, D, C, C
+    idx = self.memory["move_index"]
+    if idx < len(seq):
+        move = seq[idx]
+        self.memory["move_index"] += 1
+        return move
+
+    # После 4 ходов
+    if self.memory["cheated_ever"]:
+        return False  # как кидала
+    # Иначе как хитрец: повторяет последний ход оппонента. Для этого нужно хранить last_opponent_move в memory.
+    last_opp = self.memory.get("last_opponent_move")
+    if last_opp is None:
+        return True
+    return last_opp
+
+
+def make_trader(strategy_name: str) -> Trader:
+    strategies = {
+        "альтруист": (altruist_strategy, {}),
+        "кидала": (cheater_strategy, {}),
+        "хитрец": (cunning_strategy, {"last_opponent_move": None}),
+        "непредсказуемый": (unpredictable_strategy, {}),
+        "злопамятный": (vengeful_strategy, {"betrayed": False}),
+        "ушлый": (shrewd_strategy, {"move_index": 0, "cheated_ever": False, "last_opponent_move": None}),
+    }
+    func, mem = strategies[strategy_name]
+    return Trader(strategy_name, func, mem)
+
+
+# --- Основной симулятор ---
+
+def simulate_year(traders: List[Trader]) -> None:
+    n = len(traders)
+    # Каждый с каждым
+    for i in range(n):
+        for j in range(i + 1, n):
+            t1, t2 = traders[i], traders[j]
+            num_deals = floor(random.uniform(DEAL_MIN, DEAL_MAX + 1))  # [5, 10]
+
+            for _ in range(num_deals):
+                move1 = t1.decide(t2)
+                move2 = t2.decide(t1)
+
+                # Обновляем память для тех стратегий, которым нужна история ходов оппонента
+                if t1.strategy_name in ("хитрец", "ушлый"):
+                    t1.memory["last_opponent_move"] = move2
+                if t2.strategy_name in ("хитрец", "ушлый"):
+                    t2.memory["last_opponent_move"] = move1
+
+                if t1.strategy_name == "злопамятный" and not move2:
+                    t1.memory["betrayed"] = True
+                if t2.strategy_name == "злопамятный" and not move1:
+                    t2.memory["betrayed"] = True
+
+                if t1.strategy_name == "ушлый" and not move2:
+                    t1.memory["cheated_ever"] = True
+                if t2.strategy_name == "ушлый" and not move1:
+                    t2.memory["cheated_ever"] = True
+
+                # Подсчёт прибыли
+                if move1 and move2:
+                    p1, p2 = PAYOFF_CC, PAYOFF_CC
+                elif move1 and not move2:
+                    p1, p2 = PAYOFF_CD, PAYOFF_DC
+                elif not move1 and move2:
+                    p1, p2 = PAYOFF_DC, PAYOFF_CD
+                else:
+                    p1, p2 = PAYOFF_DD, PAYOFF_DD
+
+                t1.add_profit(p1)
+                t2.add_profit(p2)
+
+
+def next_generation(traders: List[Trader]) -> List[Trader]:
+    n = len(traders)
+    k = floor(n * EXCLUDE_PERCENT)  # сколько исключаем
+
+    # Сортируем по прибыли (убывание), при равенстве — любой порядок
+    sorted_traders = sorted(traders, key=lambda t: t.total_profit, reverse=True)
+
+    top_performers = sorted_traders[:k]  # 20% лучших
+    bottom_performers = sorted_traders[-k:]  # 20% худших
+
+    # Удаляем худших
+    new_traders_list = [t for t in traders if t not in bottom_performers]
+
+    # Добавляем новых, копирующих лучших
+    for _ in range(k):
+        model = random.choice(top_performers)
+        new_trader = make_trader(model.strategy_name)
+        # Копируем состояние памяти, чтобы новый торговец продолжал как модель
+        new_trader.memory = model.memory.copy()
+        new_traders_list.append(new_trader)
+
+    return new_traders_list
+
+
+def run_simulation(years: int = 50, seed: int | None = 42) -> List[Dict[str, Any]]:
+    if seed is not None:
+        random.seed(seed)
+
+    strategy_names = ["альтруист", "кидала", "хитрец", "непредсказуемый", "злопамятный", "ушлый"]
+    n_per_strategy = NUM_TRADERS // len(strategy_names)
+
+    traders = []
+    for name in strategy_names:
+        for _ in range(n_per_strategy):
+            traders.append(make_trader(name))
+
+    history = []
+
+    for year in range(years):
+        # Сброс памяти и прибыли для нового года
+        for t in traders:
+            t.reset_year()
+        simulate_year(traders)
+
+        counts = Counter(t.strategy_name for t in traders)
+        avg_profits = {}
+        for name in strategy_names:
+            group = [t for t in traders if t.strategy_name == name]
+            if group:
+                avg_profits[name] = sum(t.total_profit for t in group) / len(group)
+            else:
+                avg_profits[name] = 0
+
+        history.append({
+            "year": year + 1,
+            "counts": dict(counts),
+            "avg_profits": avg_profits,
+        })
+
+        traders = next_generation(traders)
+
+    return history
+
+
+if __name__ == "__main__":
+    hist = run_simulation(years=50)
+    last = hist[-1]
+    print("Распределение стратегий в конце:", last["counts"])
+    print("Средняя прибыль по стратегиям в конце:", last["avg_profits"])
+Как интерпретировать результаты
+Запустите код и посмотрите на динамику:
+
+Счётчики стратегий покажут, какие из них выживают и доминируют к концу симуляции.
+Средняя прибыль по стратегиям покажет, насколько они выгодны в текущем составе популяции.
+Что обычно происходит в такой модели
+«Кидала» поначалу может зарабатывать много, но когда их становится слишком много, они начинают чаще сталкиваться друг с другом и получать по 2 золотых вместо 5 — их прибыль падает.
+«Хитрец» (Tit-for-Tat) исторически очень устойчив в подобных играх: он наказывает обманщиков, но готов к сотрудничеству с честными. В условиях ошибок (5%) он остаётся сильным, потому что прощает после одного честного хода оппонента.
+«Злопамятный» может быть менее устойчив, чем «хитрец», потому что навсегда переходит в режим обмана после первой ошибки оппонента (в том числе случайной).
+«Альтруист» в чистом виде проигрывает, если рядом есть обманщики.
+«Непредсказуемый» даёт нестабильные результаты и обычно не доминирует.
+«Ушлый» пытается получить преимущество за счёт хитрой начальной последовательности, но в долгосрочной перспективе его успех сильно зависит от состава популяции.
+Наиболее выгодной в долгосрочной перспективе в большинстве запусков оказывается стратегия «хитрец»: она балансирует между наказанием обманщиков и возможностью вернуться к сотрудничеству, что выгодно при случайных ошибках.
