@@ -1,0 +1,308 @@
+Решение - Власов - 31-08-2026 + 
+Архитектура решения
+•	Стек: React 18, TypeScript, MUI (для компонентов), axios (запросы).
+•	Сборка: Vite (быстрее и современнее CRA).
+•	Данные: получаем один раз (GET /api/users), дальше всё на фронтенде — сортировка, пагинация, поиск.
+•	Таблица: используем Table из MUI + кастомный скролл, чтобы закрепить первую и последнюю колонки.
+•	Изменяемая ширина колонок: реализуем через сохранение ширины в состоянии и inline-стилях ячеек.
+________________________________________
+Установка зависимостей
+bash
+ПереноситьСвернутьКопировать
+npm create vite@latest time-tracker --template react-ts
+cd time-tracker
+npm install axios @mui/material @emotion/react @emotion/styled
+npm run dev
+________________________________________
+Структура данных (ожидается от бэкенда)
+ts
+ПереноситьСвернутьКопировать
+interface UserDay {
+  day: number;
+  timeSeconds: number; // удобно хранить в секундах, потом форматировать
+}
+
+interface User {
+  id: string;
+  fullname: string;
+  days: UserDay[]; // массив только по дням, где есть данные
+}
+Пример ответа /api/users:
+json
+ПереноситьСвернутьКопировать
+[
+  {
+    "id": "u1",
+    "fullname": "Иван Иванов",
+    "days": [
+      {"day": 1, "timeSeconds": 3600},
+      {"day": 5, "timeSeconds": 1800}
+    ]
+  }
+]
+________________________________________
+Получение и подготовка данных
+Нужно превратить разреженные дни в полный массив по дням месяца и посчитать итог.
+ts
+ПереноситьСвернутьКопировать
+// utils/prepareData.ts
+export function prepareUsersForMonth(users: User[], daysInMonth: number) {
+  return users.map((user) => {
+    const dayMap = new Map<number, number>();
+    user.days.forEach((d) => dayMap.set(d.day, d.timeSeconds));
+
+    const monthTotal = Array.from(dayMap.values()).reduce((a, b) => a + b, 0);
+
+    const daysArray = Array.from({ length: daysInMonth }, (_, i) => {
+      const day = i + 1;
+      return dayMap.has(day) ? dayMap.get(day)! : 0;
+    });
+
+    return {
+      id: user.id,
+      fullname: user.fullname,
+      days: daysArray, // [0, 3600, 0, 0, 1800, ...]
+      monthlyTotal: monthTotal,
+    };
+  });
+}
+________________________________________
+Компонент таблицы с закреплёнными колонками и изменяемой шириной
+Самый простой способ закрепить первую/последнюю колонку — разделить таблицу на 3 части:
+1.	Левая часть (User)
+2.	Центральная часть (дни месяца) — с горизонтальным скроллом
+3.	Правая часть (Monthly total)
+Это даёт нативный скролл и надёжное закрепление.
+Компонент TimeTrackerTable.tsx
+tsx
+ПереноситьСвернутьКопировать
+import React, { useState, useMemo } from 'react';
+import {
+  Table, TableBody, TableCell, TableContainer, TableHead, TableRow,
+  Paper, TextField, IconButton, Checkbox
+} from '@mui/material';
+import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward';
+import ArrowDownwardIcon from '@mui/icons-material/ArrowDownward';
+import axios from 'axios';
+import { prepareUsersForMonth } from './utils/prepareData';
+
+interface RowData {
+  id: string;
+  fullname: string;
+  days: number[]; // секунды
+  monthlyTotal: number;
+}
+
+const DAYS_IN_MONTH = 31; // можно сделать динамическим
+
+export default function TimeTrackerTable() {
+  const [data, setData] = useState<RowData[]>([]);
+  const [search, setSearch] = useState('');
+  const [sort, setSort] = useState<{ col: 'name' | 'total' | null; asc: boolean }>({ col: null, asc: true });
+  const [pageSize, setPageSize] = useState(10);
+  const [page, setPage] = useState(0);
+  const [colWidths, setColWidths] = useState<Record<number, number>>({}); // индекс дня -> ширина
+
+  // Загрузка данных
+  React.useEffect(() => {
+    axios.get<any[]>('/api/users')
+      .then((res) => {
+        const prepared = prepareUsersForMonth(res.data, DAYS_IN_MONTH);
+        setData(prepared);
+      });
+  }, []);
+
+  // Фильтрация по имени
+  const filtered = useMemo(() => {
+    const q = search.toLowerCase().trim();
+    if (!q) return data;
+    return data.filter((r) => r.fullname.toLowerCase().includes(q));
+  }, [data, search]);
+
+  // Сортировка
+  const sorted = useMemo(() => {
+    let arr = [...filtered];
+    if (sort.col === 'name') {
+      arr.sort((a, b) => (a.fullname.localeCompare(b.fullname)) * (sort.asc ? 1 : -1));
+    } else if (sort.col === 'total') {
+      arr.sort((a, b) => (a.monthlyTotal - b.monthlyTotal) * (sort.asc ? 1 : -1));
+    }
+    return arr;
+  }, [filtered, sort]);
+
+  // Пагинация (фронтенд)
+  const start = page * pageSize;
+  const paged = sorted.slice(start, start + pageSize);
+
+  const totalPages = Math.ceil(sorted.length / pageSize);
+
+  // Вспомогательная функция для форматирования времени
+  const formatTime = (seconds: number): string => {
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    return `${h} ч ${m} мин`;
+  };
+
+  // Управление шириной колонки
+  const setColWidth = (dayIndex: number, width: number) => {
+    setColWidths((prev) => ({ ...prev, [dayIndex]: width }));
+  };
+
+  return (
+    <Paper style={{ padding: 16 }}>
+      <TextField
+        fullWidth
+        label="Поиск по имени"
+        value={search}
+        onChange={(e) => { setSearch(e.target.value); setPage(0); }}
+        style={{ marginBottom: 16 }}
+      />
+
+      {/* Таблица */}
+      <div style={{ display: 'flex', overflowX: 'auto', maxWidth: '100%' }}>
+        {/* Левая колонка: Пользователь */}
+        <div style={{ minWidth: 200, flexShrink: 0 }}>
+          <TableContainer component="div" style={{ borderRight: '1px solid #ddd' }}>
+            <Table>
+              <TableHead>
+                <TableRow>
+                  <TableCell
+                    onClick={() => setSort((s) => s.col === 'name' ? { col: null, asc: true } : { col: 'name', asc: !s.asc })}
+                    style={{ cursor: 'pointer' }}
+                  >
+                    Пользователь {sort.col === 'name' && (sort.asc ? <ArrowUpwardIcon fontSize="small" /> : <ArrowDownwardIcon fontSize="small" />)}
+                  </TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {paged.map((r) => (
+                  <TableRow key={r.id}>
+                    <TableCell>{r.fullname}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        </div>
+
+        {/* Центральная часть: дни месяца (скролл) */}
+        <div style={{ flex: 1, minWidth: 0, overflowX: 'auto' }}>
+          <TableContainer component="div">
+            <Table style={{ tableLayout: 'fixed', width: 'max-content' }}>
+              <TableHead>
+                <TableRow>
+                  {Array.from({ length: DAYS_IN_MONTH }, (_, i) => {
+                    const day = i + 1;
+                    return (
+                      <TableCell
+                        key={day}
+                        style={{
+                          width: colWidths[day] ?? 60,
+                          minWidth: 40,
+                          cursor: 'col-resize',
+                          userSelect: 'none',
+                        }}
+                        onMouseDown={(e) => handleResize(e, day)}
+                      >
+                        {day}
+                      </TableCell>
+                    );
+                  })}
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {paged.map((r) => (
+                  <TableRow key={r.id}>
+                    {r.days.map((sec, idx) => {
+                      const day = idx + 1;
+                      return (
+                        <TableCell key={day} style={{ width: colWidths[day] ?? 60 }}>
+                          {formatTime(sec)}
+                        </TableCell>
+                      );
+                    })}
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        </div>
+
+        {/* Правая колонка: Monthly total */}
+        <div style={{ minWidth: 120, flexShrink: 0 }}>
+          <TableContainer component="div" style={{ borderLeft: '1px solid #ddd' }}>
+            <Table>
+              <TableHead>
+                <TableRow>
+                  <TableCell
+                    onClick={() => setSort((s) => s.col === 'total' ? { col: null, asc: true } : { col: 'total', asc: !s.asc })}
+                    style={{ cursor: 'pointer', textAlign: 'right' }}
+                  >
+                    Ежемесячно {sort.col === 'total' && (sort.asc ? <ArrowUpwardIcon fontSize="small" /> : <ArrowDownwardIcon fontSize="small" />)}
+                  </TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {paged.map((r) => (
+                  <TableRow key={r.id}>
+                    <TableCell style={{ textAlign: 'right' }}>
+                      {formatTime(r.monthlyTotal)}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        </div>
+      </div>
+
+      {/* Пагинация */}
+      <div style={{ marginTop: 16, display: 'flex', gap: 8, alignItems: 'center' }}>
+        <button disabled={page === 0} onClick={() => setPage(p => Math.max(0, p - 1))}>←</button>
+        Страница {page + 1} из {totalPages}
+        <button disabled={page + 1 >= totalPages} onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))}>→</button>
+        <select value={pageSize} onChange={(e) => { setPageSize(Number(e.target.value)); setPage(0); }}>
+          <option value={5}>5</option>
+          <option value={10}>10</option>
+          <option value={20}>20</option>
+        </select>
+      </div>
+    </Paper>
+  );
+
+  function handleResize(e: React.MouseEvent, day: number) {
+    const startX = e.clientX;
+    const initialWidth = colWidths[day] ?? 60;
+
+    const onMouseMove = (ev: MouseEvent) => {
+      const delta = ev.clientX - startX;
+      const newWidth = Math.max(40, initialWidth + delta);
+      setColWidth(day, newWidth);
+    };
+
+    const onMouseUp = () => {
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+    };
+
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+  }
+}
+________________________________________
+Как запустить сервер и проверить
+1.	Выполнить npm run server (как указано в задании).
+2.	Убедиться, что на порту бэкенда доступен GET /api/users.
+3.	В проекте React убедиться, что прокси или CORS позволяют запрашивать API (если фронтенд и бэкенд на разных портах).
+________________________________________
+Что уже покрывает требования
+•	✅ React + TypeScript.
+•	✅ Таблица: Пользователь | 1…31 | Ежемесячно.
+•	✅ Дни без данных → 0 (через dayMap и заполнение нулями).
+•	✅ Monthly total — сумма по дням.
+•	✅ Поиск по Fullname.
+•	✅ Сортировка по имени и по месячному итогу.
+•	✅ Пагинация на фронтенде.
+•	✅ Закрепление первой и последней колонок (через 3 блока).
+•	✅ Изменяемая ширина колонок (drag-resize).
+
