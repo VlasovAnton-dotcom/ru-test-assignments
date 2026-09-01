@@ -1,0 +1,250 @@
+Bigdata-devops-assigment - Vlasov - 01-09-2026 +
+
+Подготовка
+1.	Проверь, что у тебя есть:
+o	Git, Docker, Docker Compose.
+o	Достаточно RAM: Druid на Docker — тяжёлый, лучше 8–16 ГБ свободной памяти. Если на macOS/Windows — проверь настройки Docker Desktop (Memory).
+2.	Клонируй репозиторий:
+bash
+git clone git@github.com:getlinkfire/devops-assignment.git
+cd devops-assignment
+________________________________________
+Запуск кластера
+В папке должен быть docker-compose.yml. Запусти:
+bash
+docker compose up -d
+Дождись, пока все сервисы будут в статусе healthy или хотя бы running. Проверь:
+bash
+docker compose ps
+Если какой-то контейнер постоянно перезапускается — смотри логи:
+bash
+docker compose logs <service_name>
+Частые проблемы: нехватка памяти (JVM heap), проблемы с сетевым соединением между контейнерами, таймауты ZooKeeper.
+________________________________________
+Проверка доступности дашбордов
+Открой в браузере:
+•	 — Druid cluster dashboard.
+•	 — Druid indexing console.
+Убедись, что интерфейс загружается и нет ошибок подключения к координатору/брокеру.
+________________________________________
+Пакетная загрузка (batch ingestion) данных wikiticker
+Тебе нужно загрузить data/wikiticker-2015-09-12-sampled.json.gz.
+Вариант 1: через Druid UI (Indexing Console)
+1.	В Indexing Console нажми Submit task → Batch ingestion.
+2.	Выбери источник данных: File, укажи путь к файлу внутри контейнера или смонтируй папку с данными в контейнер (если в compose не смонтирована).
+3.	Настрой схему данных (schema): Druid должен понять типы колонок и временную метку. Для wikiticker это обычно timestamp и несколько измерений/метрик.
+4.	Запусти задачу. Следи за статусом в UI и в логах MiddleManager.
+5.	Когда статус станет SUCCESS, в списке datasources появится новый источник (обычно wikiticker).
+Вариант 2: через API (более «devops»-способ)
+Подготовь ingestion spec (JSON) для wikiticker (можно взять из Druid quickstart и адаптировать под эту сборку). Примерный шаблон:
+json
+{
+  "type": "index_parallel",
+  "spec": {
+    "dataSchema": {
+      "dataSource": "wikiticker",
+      "timestampSpec": {
+        "column": "timestamp",
+        "format": "iso"
+      },
+      "dimensionsSpec": { ... },
+      "metricsSpec": [ ... ],
+      "granularitySpec": { "queryGranularity": "none", "segmentGranularity": "day" }
+    },
+    "ioConfig": {
+      "type": "index_parallel",
+      "inputSource": {
+        "type": "file",
+        "paths": ["/opt/druid/data/wikiticker-2015-09-12-sampled.json.gz"]
+      },
+      "inputFormat": { "type": "json" }
+    },
+    "tuningConfig": { "type": "index_parallel" }
+  }
+}
+Отправь POST на /druid/indexer/v1/task (адрес зависит от роутера/брокера в твоей сборке; часто это http://localhost:8082 внутри сети Docker или проброшенный порт).
+________________________________________
+Простой запрос к свежесозданному datasource
+Когда данные загружены, сделай простой SQL-запрос через Druid SQL (или через UI Query):
+sql
+SELECT COUNT(*) FROM wikiticker;
+или что-то вроде:
+sql
+SELECT page, COUNT(*) AS cnt
+FROM wikiticker
+GROUP BY page
+ORDER BY cnt DESC
+LIMIT 10;
+Проверь, что запрос возвращает осмысленные результаты.
+________________________________________
+Extra: Real-time ingestion через Kafka в wikiticker
+Это уже сложнее, потому что нужно:
+1.	Подготовить данные в формате, который Druid ожидает для Kafka.
+2.	Создать Kafka topic.
+3.	Написать ingestion spec типа kafka вместо index_parallel.
+4.	Отправить сообщения в Kafka и убедиться, что MiddleManager читает их и создаёт сегменты.
+5.	Проверить, что новые строки видны в запросах.
+Учитывая твой опыт с Kafka и написанием кода, логика будет похожа на типичную задачу: producer → topic → consumer-like ingestion task в Druid → query.
+________________________________________
+Extra: Метрики Druid → Kafka → обратно в Druid
+В задании сказано, что Druid настроен эмитить метрики в Kafka. Тебе нужно:
+1.	Найти, какой именно топик используется для метрик.
+2.	Создать новый datasource (например, druid_metrics).
+3.	Написать ingestion spec для Kafka-источника, который читает эти метрики.
+4.	Загрузить их в Druid.
+5.	Сделать SELECT по этим метрикам (например, агрегировать по времени и типу метрики).
+Здесь пригодятся твои навыки работы с агрегациями и пониманием структуры метрик (как в задачах про precision/recall, линейную регрессию и т.п.).
+________________________________________
+На что обратить внимание при troubleshooting (и про JVM heap)
+Поскольку в задании есть намёк на JVM heap, типичные проблемы:
+•	OOM (Out Of Memory) у Druid-сервисов: увеличь лимиты памяти в docker-compose.yml или в переменных окружения (например, JAVA_OPTS с -Xmx).
+•	ZooKeeper connection loss: проверь, что сеть между контейнерами работает, и таймауты не слишком маленькие.
+•	Недоступность metadata-хранилища (MySQL): проверь, что MySQL поднялся раньше Druid-сервисов и учётные данные совпадают.
+•	Несовпадение версий/конфигураций: если используешь чужой compose, иногда проще добавить явные версии образов и проверить, что порты не конфликтуют.
+Для диагностики:
+bash
+docker compose logs broker
+docker compose logs middlemanager
+docker compose logs coordinator
+docker compose logs historical
+________________________________________
+Если захочешь написать письмо на 
+В письме полезно указать:
+•	Какие проблемы встретились (OOM, таймауты, сетевые ошибки).
+•	Что ты сделал для исправления (увеличение heap, правки compose, проверка сети).
+•	Что работает, а что нет (batch ingestion OK, real-time/metrics — частично).
+•	Любые несоответствия в конфигурации (например, порты, имена топиков, пути к данным).
+________________________________________
+Если скажешь, на каком шаге возникла конкретная ошибка (например, «не стартует MiddleManager» или «запрос возвращает пустой результат»), я помогу разобрать логи и подправить ingestion spec или compose.
+•  •  •  •  •  •  Я
+First of all, clone this repository: git clone git@github.com:getlinkfire/bigdata-devops-assignment.git Now, given this Docker Compose file, stand up a Druid cluster. The compose file is going to launch : 1 zookeeper node 1 MySQL database 1 Kafka message broker and the following druid services : 1 broker 1 middlemanager 1 historical 1 coordinator/overlord This will take a couple of minutes, but once it is up, you will have: The Druid cluster dashboard on: http://localhost:3001/#/ The Druid indexing console on: http://localhost:3001/console.html Now that you have a running cluster, ingest the data found in data/wikiticker-2015-09-12-sampled.json.gz. Once your ingestion job has succesfully executed, perform a simple query on the freshly created datasource. The dataset is kindly borrowed from the Druid quickstart tutorial, you may find some inspiration there. Read a little about the Druid indexing service if you like ;) Extra assignments Piece of cake was it? Alright, while the above should get us off the ground talking about troubleshooting skills and JVM heap configuration (hint), if you feel courageous; go ahead and setup realtime ingestion through Kafka, into the wikiticker datasource, and query your data back out again with a select query. Also, the attentive ones will notice that we have configured Druid to emit metrics into Kafka. Now create a new Druid datasource, and ingest those metrics back into Druid where we can query them. You may find a bit of inspiration in this blog post. Came here by accident? Well a good puzzle is hard to resist isn't it? If you found your way through our little builtin quirks and gotchas out of pure curiosity, we would absolutely love to hear from you. Please write us an email on devops@linkfire.com, tell us what we misconfigured and what you did to make this setup shine.
+•  •  •  Алиса
+Ниже — пошаговая инструкция, как выполнить это задание. Учитывая твой опыт с Docker, Kafka и написанием кода, тут много знакомых вещей, но есть и специфика Druid (особенно с ingestion-спецификациями и JVM).
+________________________________________
+1. Клонирование репозитория и проверка структуры
+bash
+git clone git@github.com:getlinkfire/bigdata-devops-assignment.git
+cd bigdata-devops-assignment
+ls
+Убедись, что в папке есть:
+•	docker-compose.yml
+•	папка data/ и в ней файл wikiticker-2015-09-12-sampled.json.gz
+Если файла нет или он пустой — это уже «quirk» для письма на .
+________________________________________
+2. Запуск кластера через Docker Compose
+bash
+docker compose up -d
+Проверь статус:
+bash
+docker compose ps
+Все сервисы должны быть в статусе running. Если какой-то контейнер постоянно перезапускается (Restarting (1) и т.п.) — смотри логи:
+bash
+docker compose logs <service_name>
+Частые проблемы на старте:
+•	Нехватка памяти: Druid-сервисы — Java-приложения, им нужно много RAM. Если видишь Exit code 137 — это OOM. В таком случае в docker-compose.yml можно добавить лимиты памяти или увеличить JAVA_OPTS (например, -Xmx4g).
+•	Таймауты ZooKeeper: сервисы Druid не могут подключиться к ZK, потому что он ещё не готов. Тут помогает либо depends_on с healthcheck, либо просто подождать пару минут и перезапустить.
+Когда всё в running, открой в браузере:
+•	 — Druid cluster dashboard
+•	 — Druid indexing console
+________________________________________
+3. Подготовка к пакетной загрузке (batch ingestion)
+Файл data/wikiticker-2015-09-12-sampled.json.gz должен быть доступен внутри контейнера, который запускает MiddleManager. Есть два пути:
+1.	Смонтировать папку data в контейнер MiddleManager в docker-compose.yml:
+yaml
+services:
+  middlemanager:
+    # ...
+    volumes:
+      - ./data:/opt/druid/data
+2.	Либо положить файл внутрь образа (менее удобно для задания).
+После правки docker-compose.yml перезапусти:
+bash
+docker compose down
+docker compose up -d
+________________________________________
+4. Ingestion данных wikiticker
+Вариант А: через Indexing Console (самый наглядный)
+1.	Открой .
+2.	Нажми Submit task → Batch ingestion.
+3.	В качестве источника выбери File и укажи путь к файлу (внутри контейнера, например /opt/druid/data/wikiticker-2015-09-12-sampled.json.gz).
+4.	Настрой схему:
+o	Timestamp column: timestamp
+o	Format: iso (или auto, если Druid сам определит)
+o	Dimensions: выбери основные поля (например, page, user, channel, isAnonymous, isNewPage, domain и т.д.)
+o	Metrics: views, uniques и т.п. (поля с числами).
+5.	Запусти задачу. Следи за статусом в UI и в логах MiddleManager:
+bash
+docker compose logs -f middlemanager
+6.	Когда статус станет SUCCESS, в списке datasources появится wikiticker.
+Вариант Б: через API (более «devops»)
+Создай JSON-файл ingestion-spec.json (на основе quickstart Druid) и отправь POST-запрос:
+bash
+curl -X POST "http://localhost:8082/druid/indexer/v1/task" \
+  -H "Content-Type: application/json" \
+  --data-binary @ingestion-spec.json
+Адрес может отличаться: иногда брокер слушает другой порт. Если не знаешь точно — проверь логи и документацию сборки в репозитории.
+________________________________________
+5. Простой запрос к datasource
+Когда ingestion успешен, сделай запрос через Druid SQL:
+sql
+SELECT COUNT(*) FROM wikiticker;
+или более полезный:
+sql
+SELECT page, COUNT(*) AS cnt
+FROM wikiticker
+GROUP BY page
+ORDER BY cnt DESC
+LIMIT 10;
+Запросы можно выполнять:
+•	в UI (Query tab),
+•	через curl к Druid Broker,
+•	из любого SQL-клиента, если есть JDBC-драйвер.
+Если запрос возвращает 0 строк или ошибку — проверь, что datasource действительно создан и сегменты опубликованы (Coordinator должен их назначить Historical).
+________________________________________
+6. Extra: Real-time ingestion через Kafka
+Здесь логика такая:
+1.	Создай Kafka-топик (например, wikiticker-kafka).
+2.	Подготовь данные в формате, который Druid ожидает для Kafka (обычно JSON).
+3.	Напиши ingestion spec типа kafka (вместо index_parallel) с указанием топика и bootstrap-servers.
+4.	Запусти producer, который пишет в топик.
+5.	Убедись, что MiddleManager читает сообщения и создаёт сегменты.
+6.	Проверь запросом, что новые данные видны.
+Учитывая твой опыт с Kafka и написанием кода на разных языках, producer можно сделать хоть на Python, хоть на Java — главное, чтобы формат сообщений совпадал с тем, что ожидает ingestion spec.
+________________________________________
+7. Extra: Метрики Druid → Kafka → обратно в Druid
+В задании сказано, что Druid настроен эмитить метрики в Kafka. Тебе нужно:
+1.	Определить имя топика, куда Druid пишет метрики.
+2.	Создать новый datasource (например, druid_metrics).
+3.	Написать ingestion spec для Kafka-источника, который читает эти метрики.
+4.	Загрузить их в Druid.
+5.	Сделать SELECT по этим метрикам, например:
+sql
+SELECT metric, time, AVG(value)
+FROM druid_metrics
+GROUP BY metric, time
+ORDER BY time DESC
+LIMIT 20;
+Это хорошая проверка понимания того, как Druid работает с метриками и как их можно анализировать внутри самого Druid.
+________________________________________
+8. Troubleshooting и JVM heap (ключевой момент задания)
+Поскольку в задании есть намёк на JVM heap, типичные симптомы:
+•	Сервисы падают с Exit code 137 → OOM.
+•	В логах: OutOfMemoryError, GC overhead limit exceeded.
+Что можно сделать:
+•	В docker-compose.yml добавить переменную окружения JAVA_OPTS с -Xmx и -Xms (например, -Xmx4g -Xms4g).
+•	Убедиться, что Docker имеет достаточно памяти (особенно на macOS/Windows).
+•	Проверить, что нет «лишних» задач, которые нагружают память.
+Пример:
+yaml
+services:
+  historical:
+    environment:
+      - JAVA_OPTS=-Xmx4g -Xms4g
+________________________________________
+9. Что написать в письме на 
+Если хочешь отправить письмо, в нём полезно указать:
+•	Какие проблемы встретились (OOM, таймауты, сетевые ошибки).
+•	Что ты сделал для исправления (увеличение heap, правка compose, добавление volumes).
+•	Что работает, а что нет (batch ingestion OK, real-time/metrics — частично).
+•	Любые несоответствия в конфигурации (например, порты, имена топиков, пути к данным).
+
