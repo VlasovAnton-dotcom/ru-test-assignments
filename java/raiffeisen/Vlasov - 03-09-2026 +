@@ -1,0 +1,153 @@
+Для реализации данного приложения оптимально использовать стек Spring Boot, так как он идеально подходит под требования standalone-приложения с HTTP API. Ниже представлен пошаговый план разработки и архитектурные решения.
+1. Архитектура проекта (Maven/Gradle)
+Структура стандартного Maven-проекта:
+•	src/main/java/com/company/socks — основной код;
+o	controller — REST-контроллеры (IncomeController, OutcomeController, BalanceController);
+o	service — бизнес-логика (SocksService);
+o	repository — работа с БД через Spring Data JPA (SocksRepository);
+o	model — сущности и DTO (SocksEntity, IncomeDto, OutcomeDto);
+o	exception — кастомные исключения (NotFoundException, InsufficientQuantityException);
+o	config — конфигурация Liquibase или Flyway.
+•	src/main/resources — ресурсы;
+o	application.yml — настройки подключения к БД и сервера;
+o	db/changelog — миграции схемы БД.
+2. Модель данных и схема базы данных
+Сущность носков должна учитывать цвет, состав и количество. Чтобы избежать дублирования строк при каждом приходе одного и того же типа носков, удобно агрегировать их по цвету и составу хлопка.
+SQL-схема:
+sql
+CREATE TABLE socks (
+    id SERIAL PRIMARY KEY,
+    color VARCHAR(50) NOT NULL,
+    cotton_part INT NOT NULL CHECK (cotton_part >= 0 AND cotton_part <= 100),
+    quantity BIGINT NOT NULL DEFAULT 0 CHECK (quantity >= 0),
+    UNIQUE(color, cotton_part)
+);
+Примечание: Использование BIGINT для количества предотвратит переполнение счетчика в высоконагруженных системах.
+Миграции (Liquibase): Хранятся в файле db/changelog/db.changelog-master.yaml. Пример ченджсета для создания таблицы:
+yaml
+databaseChangeLog:
+  - changeSet:
+      id: 1
+      author: developer
+      changes:
+        - createTable:
+            tableName: socks
+            columns:
+              - column:
+                  name: id
+                  type: BIGINT
+                  autoIncrement: true
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: color
+                  type: VARCHAR(50)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: cotton_part
+                  type: INT
+                  constraints:
+                    nullable: false
+                    checkConstraint: "cotton_part >= 0 AND cotton_part <= 100"
+              - column:
+                  name: quantity
+                  type: BIGINT
+                  constraints:
+                    nullable: false
+                    defaultValueNumeric: 0
+                    checkConstraint: "quantity >= 0"
+        - addUniqueConstraint:
+            tableName: socks
+            columnNames: color, cotton_part
+3. Реализация REST API
+POST /api/socks/income Контроллер принимает JSON, маппит его на DTO и передает в сервис. В сервисе происходит поиск записи в БД по паре (color, cottonPart). Если запись найдена — обновляется поле quantity += incomingQuantity. Если не найден — создается новая запись.
+Пример тела запроса:
+json
+{
+  "color": "black",
+  "cottonPart": 20,
+  "quantity": 150
+}
+POST /api/socks/outcome Логика аналогична приходу, но со знаком минус. Важный нюанс: перед вычитанием необходимо проверить, что запрашиваемое количество не превышает остаток на складе. Если currentQuantity < requestedQuantity, сервис должен вернуть ошибку 400 Bad Request с понятным сообщением (например, «Недостаточно носков на складе»).
+GET /api/socks Здесь кроется главная сложность из-за параметра operation. Стандартными методами репозитория findBy... это сделать сложно. Оптимальное решение — использовать JPA Specification. Это позволит динамически строить запрос в зависимости от значения operation.
+Примеры запросов: GET /api/socks?color=red&operation=moreThan&cottonPart=90 GET /api/socks?color=black&operation=lessThan&cottonPart=10
+Спецификация будет выглядеть примерно так:
+java
+public static Specification<SocksEntity> hasColor(String color) {
+    return (root, query, cb) -> cb.equal(root.get("color"), color);
+}
+
+public static Specification<SocksEntity> matchCottonOperation(String operation, int part) {
+    Root<SocksEntity> root = null; // внутри лямбды
+    switch (operation) {
+        case "moreThan": return cb.greaterThan(root.get("cotton_part"), part);
+        case "lessThan": return cb.lessThan(root.get("cotton_part"), part);
+        case "equal": return cb.equal(root.get("cotton_part"), part);
+        default: throw new IllegalArgumentException();
+    }
+}
+В контроллере они объединяются через .and(), после чего вызывается repository.findAll(specification) с последующим суммированием поля quantity.
+4. Обработка ошибок
+Для соответствия требованиям статусов ответа:
+•	HTTP 400: выбрасывается при отсутствии параметров, некорректном формате JSON (Spring сделает это автоматически), отрицательном количестве или попытке отпустить больше носков, чем есть на складе.
+•	HTTP 500: ошибки доступа к базе данных (таймауты, недоступность). Их не нужно ловить вручную в каждом методе. Достаточно создать один глобальный обработчик исключений через @RestControllerAdvice, который будет перехватывать DataAccessException и возвращать статус 500.
+5. Инфраструктурные требования (Docker)
+Приложение должно быть headless и легко запускаемым. Для этого используется Docker Compose, который поднимает связку Java-приложения и СУБД одной командой.
+docker-compose.yml:
+yaml
+version: '3.8'
+services:
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: socks_db
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: pass
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+
+  app:
+    build: .
+    depends_on:
+      - db
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/socks_db
+      SPRING_DATASOURCE_USERNAME: user
+      SPRING_DATASOURCE_PASSWORD: pass
+    ports:
+      - "8080:8080"
+
+volumes:
+  pg_data:
+В самом приложении достаточно добавить зависимость spring-boot-starter-data-jpa, драйвер PostgreSQL и настроить подключение через переменные окружения.
+6. Процесс выполнения задания (Git workflow)
+1.	Сделать форк предложенного репозитория.
+2.	В локальном репозитории создать ветку feature/socks-accounting.
+3.	Инициализировать Spring Boot проект.
+4.	Настроить Liquibase/Flyway и написать миграцию.
+5.	Реализовать сущность, DTO, Repository (со спецификацией).
+6.	Реализовать Service слой с транзакциями (@Transactional), где методы прихода и расхода атомарно меняют баланс.
+7.	Реализовать три контроллера и глобальный обработчик ошибок.
+8.	Добавить Dockerfile и docker-compose.yml.
+o	Пример простого Dockerfile:
+dockerfile
+FROM eclipse-temurin:17-jdk-alpine
+VOLUME /tmp
+COPY target/socks-app.jar app.jar
+ENTRYPOINT ["java","-jar","/app.jar"]
+9.	Протестировать API через Swagger (добавив springdoc-openapi-ui) или curl/Postman.
+10.	Закоммитить изменения, запушить ветку в свой форк и открыть Pull Request в оригинальный репозиторий.
+7. Развертывание (Heroku / другой PaaS)
+Для публикации на Heroku потребуется:
+1.	Убрать docker-compose (PaaS сам управляет контейнерами).
+2.	Создать бесплатное дополнение Postgresql на стороне Heroku (heroku addons:create heroku-postgresql:hobby-dev).
+3.	Приложение само заберет URL базы данных из переменной окружения DATABASE_URL.
+4.	Собрать jar-файл без встроенных контейнеров (или оставить Spring Boot embedded Tomcat).
+5.	Указать Procfile: web: java -Dserver.port=$PORT -jar target/socks-app.jar.
+6.	Задеплоить код пушем в привязанный GitHub-репозиторий (через интеграцию Heroku) или напрямую через CLI (git push heroku main). После деплоя API станет доступно по адресу вида https://<app-name>.herokuapp.com/api/socks/income.
+
+
