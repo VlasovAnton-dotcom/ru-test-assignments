@@ -1,0 +1,161 @@
+Решение - Vlasov - 03-09-2026 +
+Ниже представлена архитектура и план реализации Java-приложения для выполнения тестового задания. Проект организован в виде Maven-модуля, что упрощает сборку, тестирование и последующую контейнеризацию.
+1. Выбор технологий (стек)
+•	Сборка: Maven или Gradle.
+•	Язык: Java 21 (для использования современных возможностей switch, паттерн-матчинга и записей).
+•	Минимальные требования (CLI): Picocli — библиотека для создания удобных консольных интерфейсов с автоматической генерацией справки (--help).
+•	Предпочтительные требования (Web + API):
+o	Spring Boot 3.x (Starter Web) — основа веб-приложения.
+o	Spring Doc OpenAPI / Swagger UI — интерактивная документация к API.
+•	Контейнеризация: Docker.
+•	Тестирование:
+o	JUnit 5.
+o	AssertJ — для читаемых утверждений в тестах.
+o	Testcontainers — для интеграционных тестов с реальной файловой системой внутри контейнера.
+2. Модель предметной области (Domain Model)
+Для строгой типизации используются неизменяемые объекты:
+javaКопировать
+// Нормализованное слово
+public record NormalizedWord(String value) {
+    public NormalizedWord {
+        Objects.requireNonNull(value);
+        if (value.isBlank()) {
+            throw new IllegalArgumentException("Normalized word cannot be blank");
+        }
+    }
+}
+
+// Результат подсчета частот
+public final class WordFrequency implements Comparable<WordFrequency> {
+    private final NormalizedWord word;
+    private long frequency;
+
+    // конструктор, геттеры
+
+    @Override
+    public int compareTo(WordFrequency o) {
+        return this.word.value().compareTo(o.word.value());
+    }
+}
+3. Алгоритм нормализации слов
+Логика вынесена в отдельный сервисный класс для легкого покрытия юнит-тестами.
+javaКопировать
+public final class WordNormalizer {
+    // Паттерн для удаления спецсимволов только в начале и конце строки
+    private static final Pattern TRIM_PATTERN = Pattern.compile("^[^a-zA-Z0-9]+|[^a-zA-Z0-9]+$");
+
+    public static Optional<NormalizedWord> normalize(String token) {
+        if (token == null || token.isBlank()) {
+            return Optional.empty();
+        }
+        
+        String trimmed = TRIM_PATTERN.matcher(token).replaceAll("");
+        if (trimmed.isEmpty()) {
+            return Optional.empty();
+        }
+
+        boolean hasLetter = trimmed.chars().anyMatch(Character::isLetter);
+        boolean hasDigit = trimmed.chars().anyMatch(Character::isDigit);
+
+        // Валидное слово должно содержать хотя бы одну букву
+        if (!hasLetter) {
+            return Optional.empty();
+        }
+
+        return Optional.of(new NormalizedWord(trimmed.toUpperCase()));
+    }
+}
+Примеры работы: (house) → HOUSE, H&M → H&M, R2-D2 → R2-D2, 2022 → пусто, 1+2=3 → пусто.
+4. Разделение по группам A-G, H-N, O-U, V-Z
+Создается перечисление (Enum), которое инкапсулирует логику определения группы:
+javaКопировать
+public enum FrequencyGroup {
+    AG('A', 'G'),
+    HN('H', 'N'),
+    OU('O', 'U'),
+    VZ('V', 'Z');
+
+    private final char start;
+    private final char end;
+
+    FrequencyGroup(char start, char end) {
+        this.start = start;
+        this.end = end;
+    }
+
+    public static Optional<FrequencyGroup> of(NormalizedWord word) {
+        char firstChar = word.value().charAt(0);
+        return Arrays.stream(values())
+                .filter(g -> firstChar >= g.start && firstChar <= g.end)
+                .findFirst();
+    }
+}
+Результаты хранятся в Map<FrequencyGroup, List<WordFrequency>>. Перед сохранением каждый список сортируется через Collections.sort() или стримы.
+5. Реализация требований
+Минимальные требования (Консольная версия)
+Приложение запускается командой: java -jar word-frequency-app.jar --input file1.txt file2.txt --output ./results
+•	Парсинг файлов: Используется фиксированный пул потоков (Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors())) из пакета java.util.concurrent. Каждый файл обрабатывается отдельной задачей (Callable<Path>), которая возвращает временный файл с промежуточными результатами (слово и счетчик через табуляцию).
+•	Подсчет частот: Главный поток собирает пути ко всем временным файлам, объединяет их с помощью одного потока (Single-threaded Collector), чтобы избежать состояния гонки (race condition) при обновлении общего ConcurrentHashMap<NormalizedWord, Long>.
+•	Сохранение результатов: После финального объединения данные разбиваются на группы, сортируются и записываются в четыре файла: group_AG.txt, group_HN.txt и т.д. Формат строки: WORD<TAB>FREQUENCY.
+•	Вывод пользователю: При указании флага --print-console агрегированные данные печатаются в стандартный вывод сгруппированными блоками.
+Предпочтительные требования (RESTful API)
+Spring Boot приложение предоставляет следующие эндпоинты:
+•	POST /api/v1/process — принимает multipart/form-data со списком файлов. Возвращает идентификатор задачи (taskId).
+•	GET /api/v1/status/{taskId} — проверка статуса обработки (QUEUED, PROCESSING, COMPLETED, FAILED).
+•	GET /api/v1/result/{taskId}/group/{group} — получение JSON-массива объектов { "word": "...", "frequency": N } для конкретной группы.
+•	GET /api/v1/result/{taskId}/download/{group} — скачивание текстового файла с результатами для группы.
+•	Swagger UI: Доступна по адресу /swagger-ui.html благодаря аннотациям @Operation и @Tag от SpringDoc.
+•	Обработка ошибок: Глобальный обработчик исключений (@ControllerAdvice), который перехватывает MaxUploadSizeExceededException, ошибки формата файла и бизнес-исключения, возвращая структурированный JSON с кодом ошибки.
+Конкурентность
+•	В CLI-версии используется кастомный ExecutorService для чтения файлов. Агрегация выполняется последовательно одним потоком во избежание дорогостоящей синхронизации мапы.
+•	В Web-версии загрузка файлов происходит асинхронно. Обработка каждого файла делегируется задаче в пуле потоков бэкенда. Для изоляции пользователей состояние каждой задачи хранится в ConcurrentHashMap<String, ProcessingTask> под уникальным UUID.
+Тестовое покрытие
+•	Юнит-тесты (85%+): 
+o	WordNormalizerTest — матрица входных токенов (валидные слова, числа, спецсимволы, смешанные случаи).
+o	FrequencyGroupTest — проверка границ диапазонов букв.
+o	FileProcessorTest — мокает чтение строк и проверяет корректность формирования карты частот.
+•	Интеграционные тесты: Запускают всё Spring-контекст или CLI-приложение целиком, загружают реальные файлы через Testcontainers и проверяют конечное состояние выходных файлов или БД.
+6. Структура проекта
+Копировать
+word-frequency-app/
+├── src/main/java/net/metasite/wordfreq/
+│   ├── WordFreqApplication.java      # Точка входа (@SpringBootApplication или CommandLineRunner)
+│   ├── api/
+│   │   └── WordFrequencyController.java
+│   ├── service/
+│   │   ├── FileProcessingService.java
+│   │   ├── AggregationService.java
+│   │   └── StorageService.java       # Абстракция над локальной ФС или S3
+│   ├── domain/
+│   │   ├── NormalizedWord.java
+│   │   ├── WordFrequency.java
+│   │   └── FrequencyGroup.java
+│   └── util/
+│       └── WordNormalizer.java
+├── src/test/java/...                 # Юнит и интеграционные тесты
+├── pom.xml                           # Зависимости (Spring Boot, Picocli, JUnit)
+├── Dockerfile                        # Многоступенчатая сборка (builder + runtime)
+└── README.md                         # Инструкции по сборке, запуску и описание API
+7. Пример ожидаемого ввода и вывода
+Ввод (файл input1.txt):
+Копировать
+Hello world! This is a test. R2-D2 and C-3PO are here.
+H&M store sells coffee.
+Нормализация: Hello -> HELLO, world! -> WORLD, a -> A, R2-D2 -> R2-D2, and -> AND, C-3PO -> C-3PO, H&M -> H&M. Числа и спецсимволы без букв (2022, 1+2=3) игнорируются.
+Выход (файл group_AG.txt):
+Копировать
+A       1
+AND     1
+ARE     1
+C-3PO   1
+(Примечание: остальные слова попадут в свои соответствующие группы).
+8. Чек-лист перед отправкой
+1.	Код выложен в публичный репозиторий (GitHub/GitLab/Bitbucket).
+2.	В корне есть исполняемый Dockerfile.
+3.	В README.md добавлен бейдж сборки (Actions/CICD) и ссылка на живое демо (если хостинг выполнен).
+4.	Приложение успешно проходит mvn clean verify (или ./gradlew build).
+5.	На письмо jobs@metasite.net отправляется краткое сопроводительное сообщение с тремя ссылками:
+o	Ссылка на Git-репозиторий.
+o	Ссылка на запущенное приложение (Heroku/AWS/ECS).
+o	Ссылка на документацию Swagger (например, https://your-app.herokuapp.com/swagger-ui.html).
+
