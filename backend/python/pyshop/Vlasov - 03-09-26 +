@@ -1,0 +1,279 @@
+BACKEND – PHYTON – PYSHOP – Черн 03-09-2026
+Реализация сервиса для генерации чеков требует четкого разделения на структуру данных, бизнес-логику API и асинхронную обработку. Ниже представлена архитектура решения в соответствии с вашими требованиями.
+1. Структура проекта (Django)
+Поскольку оборачивать сам проект в Docker не требуется, предполагается следующая структура каталогов:
+project_root/
+├── media/pdf/                  # Директория для хранения PDF-файлов
+├── templates/                  # HTML-шаблоны из репозитория
+│   ├── kitchen.html
+│   └── client.html
+├── checks/                     # Django-приложение
+│   ├── models.py
+│   ├── serializers.py
+│   ├── views.py
+│   ├── tasks.py
+│   └── admin.py
+├── config/
+│   ├── settings.py
+│   ├── urls.py
+│   └── routing.py              # Для DRF SimpleRouter
+├── api.yml                     # Swagger-спецификация
+├── manage.py
+├── requirements.txt
+└── docker-compose.yml          # Инфраструктурный файл
+2. Модели (checks/models.py)
+Для работы JSONField в PostgreSQL 9.6 необходимо использовать пакет django-jsonfield-backport. Поля моделей строго соответствуют заданию.
+python
+import os
+from django.db import models
+from jsonfield_backport import JSONField
+
+def check_pdf_path(instance, filename):
+    # Формируем путь: media/pdf/<order_id>_<type>.pdf
+    order_id = instance.order.get('id', 'unknown')
+    return f'pdf/{order_id}_{instance.type}.pdf'
+
+class Printer(models.Model):
+    KITCHEN = 'kitchen'
+    CLIENT = 'client'
+    CHECK_TYPES = [
+        (KITCHEN, 'Кухня'),
+        (CLIENT, 'Клиент'),
+    ]
+    
+    name = models.CharField(max_length=100)
+    api_key = models.CharField(max_length=50, unique=True)
+    check_type = models.CharField(max_length=10, choices=CHECK_TYPES)
+    point_id = models.IntegerField()
+
+    def __str__(self):
+        return f'{self.name} ({self.check_type})'
+
+class Check(models.Model):
+    NEW = 'new'
+    RENDERED = 'rendered'
+    PRINTED = 'printed'
+    STATUSES = [
+        (NEW, 'Новый'),
+        (RENDERED, 'Сгенерирован'),
+        (PRINTED, 'Напечатан'),
+    ]
+    
+    TYPE_KITCHEN = 'kitchen'
+    TYPE_CLIENT = 'client'
+    TYPES = [
+        (TYPE_KITCHEN, 'Кухня'),
+        (TYPE_CLIENT, 'Клиент'),
+    ]
+
+    printer = models.ForeignKey(Printer, on_delete=models.CASCADE)
+    type = models.CharField(max_length=10, choices=TYPES)
+    order = JSONField()
+    status = models.CharField(max_length=10, choices=STATUSES, default=NEW)
+    pdf_file = models.FileField(upload_to=check_pdf_path, null=True, blank=True)
+
+    class Meta:
+        unique_together = ('printer', 'order') # Логическая уникальность по связке принтер-заказ,
+                                               # но основная проверка будет в коде через ID заказа
+
+    def __str__(self):
+        order_id = self.order.get('id', 'N/A')
+        return f'Check {order_id} for {self.printer.name}'
+3. Асинхронные задачи (checks/tasks.py)
+Используется django_rq, который является оберткой над Redis Queue (RQ). Важный нюанс: контейнеры внутри docker-compose общаются друг с другом по именам сервисов. Если сервис redis называется redis, а веб-сервер запускается локально или в отдельном контейнере, URL должен быть доступен воркеру. В примере ниже используется стандартный порт 6379.
+Генерация PDF происходит путем вызова внешнего контейнера wkhtmltopdf через HTTP-запрос. Это позволяет избежать проблем с зависимостями библиотек в основном приложении.
+python
+import requests
+import os
+from django.conf import settings
+from rq import get_current_job
+from .models import Check
+
+WKHTMLTOPDF_SERVICE_URL = "http://wkhtmltopdf:8080" # Имя сервиса из docker-compose
+
+def generate_pdf(check_id):
+    job = get_current_job()
+    try:
+        check = Check.objects.get(id=check_id)
+        
+        if check.status != Check.NEW:
+            return
+
+        check.status = Check.RENDERED
+        check.save(update_fields=['status'])
+
+        template_name = 'client.html' if check.type == Check.TYPE_CLIENT else 'kitchen.html'
+        html_template_path = os.path.join(settings.BASE_DIR, 'templates', template_name)
+        
+        with open(html_template_path, 'r', encoding='utf-8') as f:
+            html_content = f.read()
+
+        # Подстановка данных заказа в шаблон (простая замена, можно усложнить до Jinja2/Django Template)
+        rendered_html = html_content.replace('{{ order_data }}', str(check.order))
+
+        files = {'file': ('template.html', rendered_html)}
+        
+        # Вызываем внешний сервис wkhtmltopdf
+        response = requests.post(
+            f"{WKHTMLTOPDF_SERVICE_URL}/",
+            files=files,
+            timeout=30
+        )
+        response.raise_for_status()
+
+        # Сохраняем полученный PDF
+        file_path = os.path.join(settings.MEDIA_ROOT, f'pdf/{check.order["id"]}_{check.type}.pdf')
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        
+        with open(file_path, 'wb') as f:
+            f.write(response.content)
+            
+        check.pdf_file.name = f'pdf/{check.order["id"]}_{check.type}.pdf'
+        check.save(update_fields=['pdf_file'])
+
+    except Check.DoesNotExist:
+        pass
+    except Exception as e:
+        job.meta['error'] = str(e)
+        job.save_meta()
+        raise
+4. API-эндпоинты (checks/views.py)
+Для создания заказов лучше всего подходит APIView от Django REST Framework (DRF), так как логика создания сложная (проверки + создание множества объектов).
+python
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+from .models import Printer, Check
+from .tasks import generate_pdf
+
+class CreateOrderChecksView(APIView):
+    def post(self, request):
+        data = request.data
+        order_id = data.get('order_id')
+        point_id = data.get('point_id')
+        
+        # Проверка: созданы ли чеки для этого заказа ранее?
+        if Check.objects.filter(order__id=order_id).exists():
+            return Response({'detail': 'Checks for this order already exist.'}, status=status.HTTP_409_CONFLICT)
+
+        # Ищем все принтеры точки нужного типа
+        printers = Printer.objects.filter(point_id=point_id)
+        if not printers.exists():
+            return Response({'detail': 'No printers found for this point.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        created_checks = []
+        for printer in printers:
+            # Создаем запись в БД для каждого принтера
+            check = Check.objects.create(
+                printer=printer,
+                type=printer.check_type,
+                order=data
+            )
+            # Запускаем задачу в очередь
+            generate_pdf.delay(check.id)
+            created_checks.append({
+                'printer_id': printer.id,
+                'check_type': check.type,
+                'status': check.status
+            })
+            
+        return Response(created_checks, status=status.HTTP_201_CREATED)
+
+class GetPrintedChecksView(APIView):
+    """
+    Эндпоинт для опроса принтером. Принимает ?api_key=<key>
+    Возвращает список готовых к печати чеков.
+    """
+    def get(self, request):
+        api_key = request.query_params.get('api_key')
+        if not api_key:
+            return Response({'detail': 'api_key is required.'}, status=status.HTTP_400_BAD_REQUEST)
+            
+        try:
+            printer = Printer.objects.get(api_key=api_key)
+        except Printer.DoesNotExist:
+            return Response({'detail': 'Invalid api_key.'}, status=status.HTTP_404_NOT_FOUND)
+            
+        ready_checks = Check.objects.filter(printer=printer, status=Check.RENDERED)
+        
+        result = []
+        for check in ready_checks:
+            result.append({
+                'check_id': check.id,
+                'order_id': check.order.get('id'),
+                'pdf_url': request.build_absolute_uri(check.pdf_file.url) if check.pdf_file else None
+            })
+            
+        return Response(result)
+5. Инфраструктура (docker-compose.yml)
+Проект Django подключается к сетям уже запущенных контейнеров. Важно пробросить тома для медиа-файлов, чтобы приложение могло записывать PDF.
+yaml
+version: '3.8'
+services:
+  db:
+    image: postgres:9.6
+    environment:
+      POSTGRES_DB: checks_db
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data/
+
+  redis:
+    image: redis:6-alpine
+    ports:
+      - "6379:6379"
+
+  worker:
+    build: .
+    command: python /code/manage.py rqworker high default low
+    volumes:
+      - .:/code
+      - ./media:/code/media
+    depends_on:
+      - redis
+      - db
+    env_file:
+      - .env
+
+  wkhtmltopdf:
+    # Готовый образ, предоставляющий HTTP API поверх бинарника wkhtmltopdf
+    # Например, актуальный форк secnull/wkhtmltopdf-api или подобный
+    image: secnull/wkhtmltopdf-api:latest
+    ports:
+      - "8080:8080"
+
+volumes:
+  pgdata:
+Примечание: основной проект Django запускается вне compose (например, через python manage.py runserver), поэтому переменные окружения базы данных и Redis должны быть прописаны в .env файле корневой папки проекта.
+6. Админка (checks/admin.py)
+Для фильтрации используются стандартные инструменты list_filter.
+python
+from django.contrib import admin
+from .models import Printer, Check
+
+@admin.register(Printer)
+class PrinterAdmin(admin.ModelAdmin):
+    list_display = ('name', 'check_type', 'point_id')
+    search_fields = ('name', 'api_key')
+    list_filter = ('check_type', 'point_id')
+
+@admin.register(Check)
+class CheckAdmin(admin.ModelAdmin):
+    list_display = ('id', 'get_order_id', 'printer', 'type', 'status')
+    search_fields = ('order__id',)
+    list_filter = ('printer', 'type', 'status')
+    
+    def get_order_id(self, obj):
+        return obj.order.get('id', '-')
+    get_order_id.short_description = 'Order ID'
+Дальнейшие шаги
+1.	Настройка .env: создать файл с переменными DATABASE_URL, REDIS_URL (указав хост host.docker.internal или IP хоста, если Django запущен локально, либо имя сервиса redis, если тоже заходит в сеть Compose), DJANGO_SECRET_KEY.
+2.	Миграции: выполнить python manage.py makemigrations && python manage.py migrate.
+3.	Swagger: настроить автоматическую генерацию документации по файлу api.yml с помощью библиотеки drf-yasg или drf-spectacular.
+4.	Шаблонизатор: заменить простую замену строк в задаче generate_pdf на полноценный рендеринг шаблонов Django (render_to_string) для поддержки циклов товаров в заказе.
+5.	Запуск очередей: запустить процесс воркера командой python manage.py rqworker.
+6.	Тестирование: проверить эндпоинты создания заказа и опроса принтером через Postman или встроенный интерфейс DRF.
+
