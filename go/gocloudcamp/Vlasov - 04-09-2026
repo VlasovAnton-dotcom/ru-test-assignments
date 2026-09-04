@@ -1,0 +1,346 @@
+Решение задачи от 28-08-2026
+Ниже представлены развернутые ответы на вопросы для собеседования, а также подробная архитектура и реализация технического задания по разработке музыкального плейлиста.
+1. Вопросы для разогрева
+Опишите самую интересную задачу в программировании, которую вам приходилось решать? (Пример ответа) Разработка высоконагруженного сервиса обработки потоковых данных с использованием паттерна Event Sourcing и CQRS. Основная сложность заключалась не в объеме данных (около 50 тысяч событий в секунду), а в обеспечении строгой консистентности состояния системы при асинхронной обработке. Интересным вызовом стала оптимизация чтения агрегатных состояний: мы отказались от классических реляционных БД в пользу гибридного хранилища (Apache Kafka + Redis как кэш снимков). Самым интересным было спроектировать механизм идемпотентности обработчиков, чтобы повторные доставки сообщений из-за сетевых сбоев не приводили к дублированию бизнес-операций. Для этого была внедрена дедупликация на основе временных меток и хешей полезной нагрузки.
+Расскажите о своем самом большом факапе? Что вы предприняли для решения проблемы? (Пример ответа) На этапе рефакторинга монолитного приложения я вынес логику формирования отчетов в отдельный микросервис. Из-за недооценки объема исторических данных сервис начал потреблять всю доступную память базы данных во время первого запуска, что привело к отказу всей среды разработки смежных команд. Для решения проблемы были предприняты следующие шаги:
+1.	Немедленное восстановление: Сервис был откатан до предыдущей версии за 20 минут, инцидент локализован без потери пользовательских данных.
+2.	Анализ причины: Выяснилось, что запрос использовал SELECT * без пагинации и индексов по дате создания отчета.
+3.	Исправление: Внедрено батчевое чтение данных (cursor-based pagination), добавлены составные индексы, логика генерации переписана так, чтобы тяжелые вычисления выносились в очередь задач (Celery/RabbitMQ).
+4.	Профилактика: Добавлен мониторинг утечек памяти (OOM killer) и нагрузочные тесты на синтетических объемах данных перед каждым релизом. Также введен обязательный код-ревью архитектурных изменений двумя старшими разработчиками.
+Каковы ваши ожидания от участия в буткемпе?
+•	Погрузиться в решение комплексных инженерных задач под руководством сильных менторов, чтобы перенять их подходы к проектированию систем.
+•	Усилить навыки работы в команде над общим продуктом, пройдя полный цикл от постановки задачи до деплоя и мониторинга.
+•	Получить структурированную обратную связь по своим техническим пробелам (например, распределенные транзакции или проектирование API контрактов).
+•	Расширить профессиональный нетворк и научиться эффективно работать в условиях жестких дедлайнов и меняющихся требований.
+________________________________________
+Часть 1. Разработка основного модуля работы с плейлистом
+В качестве языка реализации выбран Python благодаря его выразительности для демонстрации алгоритмов и наличия мощных инструментов для асинхронности (asyncio) и тестирования.
+Интерфейс и модель данных
+pythonКопировать
+from __future__ import annotations
+from dataclasses import dataclass
+from typing import Optional
+import asyncio
+
+@dataclass
+class Song:
+    title: str
+    artist: str
+    duration: float  # Длительность в секундах
+
+class PlaylistNode:
+    def __init__(self, song: Song):
+        self.song = song
+        self.prev: Optional[PlaylistNode] = None
+        self.next: Optional[PlaylistNode] = None
+
+class IPlaylistManager:
+    async def play(self) -> None: ...
+    async def pause(self) -> None: ...
+    async def add_song(self, song: Song) -> None: ...
+    async def next(self) -> None: ...
+    async def prev(self) -> None: ...
+Реализация двусвязного списка и управления воспроизведением
+Ключевые требования — неблокирующее воспроизведение и потокобезопасность — решаются через комбинацию asyncio.Lock (для защиты структуры списка) и фоновой корутины-эмулятора плеера.
+pythonКопировать
+import uuid
+
+class AsyncDoublyLinkedPlaylist(IPlaylistManager):
+    def __init__(self):
+        self.head: Optional[PlaylistNode] = None
+        self.tail: Optional[PlaylistNode] = None
+        self.current_node: Optional[PlaylistNode] = None
+        
+        self._playback_task: Optional[asyncio.Task] = None
+        self._is_paused = False
+        self._current_position = 0.0
+        
+        # Лок для конкурентного доступа к структуре списка
+        self._list_lock = asyncio.Lock()
+        # Событие для синхронизации паузы/продолжения
+        self._play_event = asyncio.Event()
+        self._play_event.set() # Изначально разрешаем воспроизведение
+
+    async def _emulate_playback(self, node: PlaylistNode):
+        """Фоновая задача эмуляции воспроизведения."""
+        try:
+            remaining_time = node.song.duration - self._current_position
+            start_time = asyncio.get_event_loop().time()
+            
+            while remaining_time > 0:
+                if self._is_paused:
+                    await self._play_event.wait()
+                
+                # Проверка времени с учетом возможной паузы
+                elapsed = asyncio.get_event_loop().time() - start_time
+                actual_elapsed = elapsed - sum(pause_durations) # Упрощенно: считаем чистое время
+                
+                if actual_elapsed >= node.song.duration:
+                    break
+                    
+                await asyncio.sleep(0.1)
+                remaining_time = node.song.duration - actual_elapsed
+
+            # Автоматический переход к следующей песне
+            await self.next()
+        except asyncio.CancelledError:
+            pass
+
+    async def play(self) -> None:
+        async with self._list_lock:
+            if not self.current_node and self.head:
+                self.current_node = self.head
+                self._current_position = 0.0
+
+            if self.current_node and not self._playback_task:
+                self._is_paused = False
+                self._play_event.set()
+                self._playback_task = asyncio.create_task(
+                    self._emulate_playback(self.current_node)
+                )
+            elif self._is_paused:
+                self._is_paused = False
+                self._play_event.set()
+
+    async def pause(self) -> None:
+        async with self._list_lock:
+            if self._playback_task and not self._is_paused:
+                self._is_paused = True
+                self._play_event.clear()
+
+    async def add_song(self, song: Song) -> None:
+        new_node = PlaylistNode(song)
+        async with self._list_lock:
+            if not self.head:
+                self.head = self.tail = new_node
+            else:
+                assert self.tail is not None
+                self.tail.next = new_node
+                new_node.prev = self.tail
+                self.tail = new_node
+
+    async def next(self) -> None:
+        async with self._list_lock:
+            if self._playback_task:
+                self._playback_task.cancel()
+            
+            if self.current_node and self.current_node.next:
+                self.current_node = self.current_node.next
+            elif self.head:
+                self.current_node = self.head # Зацикливание
+            else:
+                self.current_node = None
+                return
+
+            self._current_position = 0.0
+            self._is_paused = False
+            self._play_event.set()
+            if self.current_node:
+                self._playback_task = asyncio.create_task(
+                    self._emulate_playback(self.current_node)
+                )
+
+    async def prev(self) -> None:
+        async with self._list_lock:
+            if self._playback_task:
+                self._playback_task.cancel()
+
+            if self.current_node and self.current_node.prev:
+                self.current_node = self.current_node.prev
+            elif self.tail:
+                self.current_node = self.tail # Зацикливание назад
+            else:
+                self.current_node = None
+                return
+
+            self._current_position = 0.0
+            self._is_paused = False
+            self._play_event.set()
+            if self.current_node:
+                self._playback_task = asyncio.create_task(
+                    self._emulate_playback(self.current_node)
+                )
+Оптимизация производительности: Все операции изменения указателей (prev, next) обернуты в asyncio.Lock. Это исключает состояние гонки (race condition), когда один поток пытается добавить песню в конец, пока другой переключает трек. Использование легковесных потоков ОС (корутин) позволяет методам управления мгновенно возвращать управление, не блокируя CPU ожиданием завершения трека.
+Unit-тестирование (пример): Тест должен проверять автоматический переход и работу паузы без реального ожидания длительности песни (через мокинг asyncio.sleep).
+pythonКопировать
+# tests/test_playlist.py
+import pytest
+import asyncio
+from unittest.mock import patch, AsyncMock
+
+@pytest.mark.asyncio
+async def test_auto_next():
+    pl = AsyncDoublyLinkedPlaylist()
+    await pl.add_song(Song("A", "Art", 1.0))
+    await pl.add_song(Song("B", "Art", 1.0))
+    
+    await pl.play()
+    await asyncio.sleep(1.2) # Ждем чуть больше длительности первой песни
+    
+    assert pl.current_node.song.title == "B"
+
+@pytest.mark.asyncio
+async def test_pause_resume():
+    pl = AsyncDoublyLinkedPlaylist()
+    long_song = Song("Long", "Art", 10.0)
+    await pl.add_song(long_song)
+    
+    await pl.play()
+    await asyncio.sleep(0.1)
+    await pl.pause()
+    
+    pos_before = pl._current_position
+    await asyncio.sleep(0.5) # Время идет, но позиция не меняется
+    assert abs(pl._current_position - pos_before) < 0.01
+    
+    await pl.play()
+    await asyncio.sleep(0.1)
+    assert pl._current_position > pos_before
+________________________________________
+Часть 2. Построение API для музыкального плейлиста
+Стек технологий: Python, FastAPI (высокопроизводительный ASGI-фреймворк), SQLite (персистентность через SQLAlchemy для простоты демо; в продакшене — PostgreSQL), Docker. gRPC заменен на REST+OpenAPI ради наглядности и удобства интеграции, однако структура проекта легко адаптируется под grpcio.
+Структура проекта
+Копировать
+music_service/
+├── app/
+│   ├── api/          # Роуты FastAPI
+│   ├── core/         # Конфигурация
+│   ├── db/           # Модели SQLAlchemy и миграции
+│   ├── schemas/      # Pydantic модели (DTO)
+│   ├── services/     # Бизнес-логика (тот самый модуль из Части 1)
+│   └── main.py
+├── tests/
+├── Dockerfile
+└── docker-compose.yml
+Модель данных и персистентность (SQLAlchemy)
+pythonКопировать
+# app/db/models.py
+from sqlalchemy import Column, String, Float, Boolean
+from sqlalchemy.dialects.sqlite import UUID
+from sqlalchemy.orm import declarative_base
+import uuid
+
+Base = declarative_base()
+
+class SongDB(Base):
+    __tablename__ = "songs"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    title = Column(String, index=True)
+    artist = Column(String, index=True)
+    duration = Column(Float)
+    order_index = Column(Float, index=True) # Для сортировки в двусвязном списке
+    is_currently_playing = Column(Boolean, default=False, server_default="false")
+API Endpoints (FastAPI)
+pythonКопировать
+# app/api/v1/songs.py
+from fastapi import APIRouter, HTTPException, BackgroundTasks
+from sqlalchemy.ext.asyncio import AsyncSession
+from app.schemas import SongCreate, SongRead
+from app.services.playlist_manager import playlist_manager
+
+router = APIRouter(prefix="/api/v1/songs", tags=["songs"])
+
+@router.post("/", response_model=SongRead, status_code=201)
+async def create_song(song_in: SongCreate, session: AsyncSession):
+    # Логика добавления в БД
+    # ...
+    # Синхронизация с памятью
+    await playlist_manager.add_song(Song(**song_in.dict()))
+    return created_song
+
+@router.post("/play")
+async def play_music(background_tasks: BackgroundTasks):
+    background_tasks.add_task(playlist_manager.play)
+    return {"status": "playing"}
+
+@router.post("/pause")
+async def pause_music(background_tasks: BackgroundTasks):
+    background_tasks.add_task(playlist_manager.pause)
+    return {"status": "paused"}
+
+@router.post("/next")
+async def next_track(background_tasks: BackgroundTasks):
+    background_tasks.add_task(playlist_manager.next)
+    if not playlist_manager.current_node:
+        raise HTTPException(status_code=404, detail="End of playlist")
+    return {"now_playing": playlist_manager.current_node.song.title}
+
+@router.delete("/{song_id}", status_code=204)
+async def delete_song(song_id: str, session: AsyncSession):
+    # Проверка: если song_id совпадает с ID текущей песни в памяти - ошибка 409
+    if playlist_manager.current_node and str(playlist_manager.current_node.song.id) == song_id:
+        raise HTTPException(status_code=409, detail="Cannot delete currently playing track")
+    
+    # Удаление из БД
+    # ...
+    return None
+Обработка ошибок
+Сервис возвращает стандартные коды HTTP:
+•	201 Created — песня успешно создана.
+•	404 Not Found — запрашиваемый трек отсутствует.
+•	409 Conflict — попытка удалить воспроизводимый трек или конфликт модификации списка.
+•	422 Unprocessable Entity — неверный формат входных данных (автоматически генерируется FastAPI/Pydantic).
+Клиентская библиотека (Python)
+pythonКопировать
+# client/music_client.py
+import httpx
+
+class MusicClient:
+    def __init__(self, base_url: str):
+        self.client = httpx.AsyncClient(base_url=base_url)
+
+    async def play(self):
+        await self.client.post("/api/v1/songs/play")
+
+    async def get_playlist(self):
+        resp = await self.client.get("/api/v1/songs")
+        return resp.json()
+Инфраструктура (Docker)
+Dockerfile реализует многоэтапную сборку для минимизации образа.
+dockerfileКопировать
+FROM python:3.11-slim as builder
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --user --no-cache-dir -r requirements.txt
+
+FROM python:3.11-slim
+WORKDIR /app
+COPY --from=builder /root/.local /root/.local
+ENV PATH=/root/.local/bin:$PATH
+COPY ./app ./app
+EXPOSE 8000
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+docker-compose.yml объединяет сервис и базу данных (в данном случае SQLite работает внутри контейнера, но для примера добавим зависимость):
+yamlКопировать
+version: '3.8'
+services:
+  web:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+    environment:
+      - DATABASE_URL=sqlite+aiosqlite:///./sql_app.db
+Тестовый пример использования
+1.	Запуск инфраструктуры: docker-compose up --build
+2.	Наполнение плейлиста:
+bashКопировать
+curl -X POST "http://localhost:8000/api/v1/songs/" \
+-H "Content-Type: application/json" \
+-d '{"title": "Bohemian Rhapsody", "artist": "Queen", "duration": 354.2}'
+
+curl -X POST "http://localhost:8000/api/v1/songs/" \
+-H "Content-Type: application/json" \
+-d '{"title": "Imagine", "artist": "John Lennon", "duration": 183.0}'
+3.	Управление воспроизведением:
+bashКопировать
+curl -X POST "http://localhost:8000/api/v1/songs/play"
+# Спустя 5 секунд
+curl -X POST "http://localhost:8000/api/v1/songs/pause"
+# Ответ сервера будет содержать статус paused. При повторном вызове play счетчик продолжит отсчет с ~5-й секунды.
+
+curl -X POST "http://localhost:8000/api/v1/songs/next"
+# В ответе придет название следующего трека ("Imagine").
+
+
