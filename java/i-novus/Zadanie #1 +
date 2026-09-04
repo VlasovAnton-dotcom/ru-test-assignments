@@ -1,0 +1,365 @@
+Задание №1 - Vlasov - 04-09-2026 +
+📌 1. Структура проекта
+
+Для быстрого старта я рекомендую использовать Spring Initializr. Введите следующие параметры:
+
+Group: ru.mimimetr (или ваш домен)
+Artifact: mimimetr-app
+Dependencies: Web, Thymeleaf, JPA, H2 Database
+
+После генерации откройте проект в IntelliJ IDEA или другой среде разработки.
+
+🛠️ 2. Настройка сущностей и репозиториев
+
+Cat.java Это основная сущность — котик. У него есть имя, фотография (хранится путь к файлу) и количество набранных голосов.
+
+java
+Копировать
+@Entity
+@Table(name = "cats")
+public class Cat {
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @Column(nullable = false)
+    private String name;
+
+    // Хранит относительный путь до файла (например, /static/cats/kitty.jpg).
+    @Column(length = 500)
+    private String imagePath;
+
+    @Column(columnDefinition = "integer default 0", nullable = false)
+    private int votes;
+}
+
+UserSession.java Временный объект для хранения состояния сессии пользователя. Он нужен, чтобы помнить, какие пары уже были показаны конкретному пользователю.
+
+java
+Копировать
+@Embeddable
+public static class UserSession {
+    @ElementCollection(fetch = FetchType.EAGER)
+    @CollectionTable(
+        name = "user_votes",
+        joinColumns = @JoinColumn(name = "session_id"))
+    @Column(name = "pair_hash")
+    private Set<String> votedPairs = new HashSet<>();
+}
+
+CatRepository.java Интерфейс для работы с базой данных.
+
+java
+Копировать
+public interface CatRepository extends JpaRepository<Cat, Long> {}
+⚙️ 3. Логика голосования (Service Layer)
+
+Здесь происходит вся магия: формирование уникальных пар, подсчёт голосов и проверка сессий.
+
+MimiService.java Ключевой метод getNextPair работает так:
+
+Генерирует все возможные уникальные комбинации из списка котов (n * (n - 1) вариантов). Для этого используется простой перебор индексов массива.
+Преобразует каждую пару в хеш-строку вида "id_меньшего;id_большего". Это нужно для того, чтобы не учитывать порядок (пары (1,2) и (2,1) считаются одинаковыми).
+Сравнивает этот список со списком уже проголосованных пар текущего пользователя.
+Возвращает первую непосещённую пару.
+
+Если таких пар нет — голосование завершено.
+
+java
+Копировать
+@Service
+public class MimiService {
+
+    private final CatRepository catRepo;
+
+    public MimiService(CatRepository repo) { this.catRepo = repo; }
+
+    /**
+     * Получение следующей уникальной пары для голосования.
+     */
+    public Optional<Pair<Cat>> getNextPair(UserSession session) {
+        List<Cat> cats = catRepo.findAll();
+        if (cats.size() < 2) return Optional.empty(); // Недостаточно котов
+
+        // Генерация всех возможных уникальных пар без учёта порядка
+        List<String> allPossiblePairs = generateUniquePairs(cats);
+
+        // Находим первую пару, за которую пользователь ещё не голосовал
+        for (String pairHash : allPossiblePairs) {
+            if (!session.getVotedPairs().contains(pairHash)) {
+                long[] ids = parseIdsFromHash(pairHash);
+                return Optional.of(new Pair<>(
+                        findById(ids[0]),
+                        findById(ids[1])
+                ));
+            }
+        }
+        return Optional.empty(); // Голосование закончено
+    }
+
+    /**
+     * Регистрация голоса пользователя.
+     * Записывает результат в БД и помечает эту пару как проголосованную.
+     */
+    public void vote(Long winnerId, Long loserId, UserSession session) {
+        Cat winner = findById(winnerId);
+        winner.setVotes(winner.getVotes() + 1); // Прибавляем голос победителю
+        catRepo.save(winner);
+
+        // Сохраняем факт голосования этой пары для текущей сессии
+        String hash = createPairHash(winnerId, loserId);
+        session.getVotedPairs().add(hash);
+    }
+
+    // Вспомогательные методы для работы с парами
+    private List<String> generateUniquePairs(List<Cat> cats) {
+        List<String> pairs = new ArrayList<>();
+        for (int i = 0; i < cats.size(); i++) {
+            for (int j = i + 1; j < cats.size(); j++) {
+                pairs.add(createPairHash(cats.get(i).getId(), cats.get(j).getId()));
+            }
+        }
+        return pairs;
+    }
+
+    private String createPairHash(long a, long b) {
+        return Math.min(a, b) + ";" + Math.max(a, b);
+    }
+
+    private long[] parseIdsFromHash(String hash) {
+        String[] parts = hash.split(";");
+        return new long[]{Long.parseLong(parts[0]), Long.parseLong(parts[1])};
+    }
+
+    private Cat findById(long id) {
+        return catRepo.findById(id).orElseThrow(() -> new IllegalArgumentException("Кот не найден"));
+    }
+}
+
+Класс Pair<T> Простая обёртка для удобного возврата двух объектов.
+
+java
+Копировать
+public record Pair<T>(T left, T right) {}
+🖥️ 4. Контроллеры и шаблоны (Thymeleaf)
+
+VoteController.java Контролирует процесс голосования. Мы храним состояние сессии в куках браузера, чтобы приложение было stateless (без сохранения состояний на сервере между запросами).
+
+java
+Копировать
+@RestController
+@RequestMapping("/")
+public class VoteController {
+
+    private final MimiService service;
+
+    public VoteController(MimiService mimiService) {
+        this.service = mimiService;
+    }
+
+    @GetMapping
+    public ModelAndView start(Model model, HttpServletRequest req) {
+        // Извлекаем сессию из cookie или создаём новую
+        UserSession session = extractOrCreateSession(req);
+
+        var nextPairOpt = service.getNextPair(session);
+        if (nextPairOpt.isEmpty()) {
+            // Если пар больше нет, переадресуем на топ
+            return new ModelAndView("redirect:/top");
+        }
+
+        Pair<Cat> pair = nextPairOpt.get();
+        model.addAttribute("left", pair.left());
+        model.addAttribute("right", pair.right());
+        return new ModelAndView("vote");
+    }
+
+    @PostMapping("/vote/{winner}")
+    public String processVote(@PathVariable Long winner,
+                             @RequestParam Long opponent,
+                             HttpServletResponse resp,
+                             HttpServletRequest req) {
+        UserSession session = extractOrCreateSession(req);
+        service.vote(winner, opponent, session);
+        saveSessionToCookie(resp, session);
+        return "redirect:/";
+    }
+
+    // Вспомогательные методы для работы с куками
+    private UserSession extractOrCreateSession(HttpServletRequest req) {
+        Cookie[] cookies = req.getCookies();
+        if (cookies != null) {
+            for (Cookie c : cookies) {
+                if ("mimi_session".equals(c.getName())) {
+                    try {
+                        return objectMapper.readValue(c.getValue(), UserSession.class);
+                    } catch (IOException e) {
+                        // Игнорируем ошибку десериализации, создадим новый сеанс
+                    }
+                }
+            }
+        }
+        return new UserSession();
+    }
+
+    private void saveSessionToCookie(HttpServletResponse resp, UserSession session) throws IOException {
+        Cookie cookie = new Cookie("mimi_session", objectMapper.writeValueAsString(session));
+        cookie.setMaxAge(60 * 60 * 24 * 7); // Срок жизни недели
+        cookie.setHttpOnly(true);
+        resp.addCookie(cookie);
+    }
+
+    // Объектомаппер для сериализации UserSession
+    private ObjectMapper objectMapper = new ObjectMapper()
+            .registerModule(new JavaTimeModule())
+            .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
+}
+
+TopController.java Отображает рейтинг.
+
+java
+Копировать
+@RestController
+@RequestMapping("/top")
+public class TopController {
+
+    private final CatRepository repository;
+
+    public TopController(CatRepository repository) {
+        this.repository = repository;
+    }
+
+    @GetMapping
+    public ModelAndView show(Model model) {
+        // Сортируем котов по убыванию количества голосов
+        List<Cat> topCats = repository.findAll()
+                .stream()
+                .sorted(Comparator.comparingInt(Cat::getVotes).reversed())
+                .limit(10) // Топ-10
+                .toList();
+
+        model.addAttribute("ranking", topCats);
+        return new ModelAndView("top");
+    }
+}
+
+Шаблон страницы голосования (src/main/resources/templates/vote.html) Используется библиотека Thymeleaf для рендеринга HTML.
+
+html
+Копировать
+<!DOCTYPE html>
+<html lang="ru" xmlns:th="http://www.thymeleff.org">
+<head><title>Мимиметр</title></head>
+<body style="text-align:center; font-family:Arial,sans-serif;">
+<h1>Кто из них мимимишнее? Кликни по фотографии!</h1>
+<div th:if="${#lists.size(ranking)} == 0">Голосование окончено! Переходи в <a href="/top">топ-10</a>.</div>
+
+<!-- Блок с двумя котиками -->
+<div style="display:flex; justify-content:center;" th:if="${not #lists.isEmpty(ranking)}">
+    <!-- Левый кот -->
+    <form method="post"
+          action="@{/vote/(winner=${left.id})}"
+          th:attr="data-opponent='${right.id}'"
+          style="margin-right:2rem; text-decoration:none; cursor:pointer;"
+    >
+        <img src="@{__${left.imagePath}__}" width="300"/>
+        <input type="submit" value="Выбрать!" hidden/>
+        <p><b th:text="${left.name}"></b></p>
+    </form>
+
+    <!-- Правый кот -->
+    <form method="post"
+          action="@{/vote/(winner=${right.id})}"
+          th:attr="data-opponent='${left.id}'"
+          style="margin-left:2rem; text-decoration:none; cursor:pointer;"
+    >
+        <img src="@{@{__${right.imagePath}__}}" width="300"/>
+        <input type="submit" value="Выбрать!" hidden/>
+        <p><b th:text="${right.name}"></b></p>
+    </form>
+</div>
+
+<script>
+// Скрипт делает кнопку submit невидимой, а саму форму кликабельной по всей площади.
+document.querySelectorAll('form').forEach(form => {
+    form.onclick = () => form.submit();
+});
+</script>
+</body>
+</html>
+
+Шаблон страницы рейтинга (src/main/resources/templates/top.html)
+
+html
+Копировать
+<!DOCTYPE html>
+<html lang="ru" xmlns:th="http://www.thymeleff.org">
+<head><title>Топ-10 Мимиметра</title></head>
+<body style="text-align:center; font-family:Arial,sans-serif;">
+<h1>🐾 Топ-10 самых мимимишных</h1>
+
+<th:each="cat,idxStat : ${ranking}">
+    <div style="display: flex; align-items: center; margin-top: 1rem; gap: 1rem;">
+        <span style="font-size: 2em;">➤ <span th:text="${idxStat.count}"></span></span>
+        <img src="@{__${cat.imagePath}__}" width="80"/>
+        <div>
+            <strong th:text="${cat.name}"></strong><br>
+            Голосов: <span th:text="${cat.votes}"></span>
+        </div>
+    </div>
+</th:each>
+
+<a href="/">Вернуться к голосованию</a>
+</body>
+</html>
+💡 5. Предустановленные данные и загрузчик изображений
+
+Чтобы выполнить требование о наличии минимум 5 котиков после деплоя, создайте файл миграции базы данных через Flyway (рекомендуется) или просто добавьте инициализацию в класс Application.
+
+Вариант A: Через миграцию (лучший способ) Создайте папку src/main/resources/db/migration/V1__init.sql
+
+sql
+Копировать
+CREATE TABLE IF NOT EXISTS cats (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(50) NOT NULL,
+    image_path VARCHAR(500),
+    votes INTEGER DEFAULT 0
+);
+INSERT INTO cats (name, image_path) VALUES 
+('Муся', '/static/cats/musya.jpg'),
+('Барсик', '/static/cats/barsik.jpg'),
+('Лаки', '/static/cats/lucky.jpg'),
+('Тоша', '/static/cats/tosha.jpg'),
+('Пушок', '/static/cats/pushok.jpg');
+
+Вариант B: Через код Добавьте аннотацию @Bean в класс Application.
+
+java
+Копировать
+@Bean
+CommandLineRunner initDatabase(CatRepository repo) {
+    return args -> {
+        repo.save(new Cat(null, "Муся", "/static/cats/musya.jpg", 0));
+        repo.save(new Cat(null, "Барсик", "/static/cats/barsik.jpg", 0));
+        // Остальные коты...
+    };
+}
+
+Загрузка изображений Поместите изображения котиков в директорию src/main/resources/static/cats/. Вы можете заменить их на свои.
+
+✅ Итоговая архитектура
+
+Проект получился чистым и тестируемым благодаря разделению ответственности:
+
+Domain (Сущности): Cat, UserSession.
+Persistence (Хранилище): CatRepository.
+Business Logic (Логика): MimiService. Здесь находится весь алгоритм формирования пар и подсчёта голосов.
+Presentation (Представление): VoteController, TopController, шаблоны Thymeleaf.
+
+Как это работает:
+
+Пользователь открывает /. Сервер проверяет его куки. Если сессии нет — создаёт её.
+Сервис генерирует случайную уникальную пару котов, которой у пользователя ещё нет в истории.
+После выбора победителя сервис прибавляет ему голос и записывает хэш пары в сессию.
+Когда все возможные пары исчерпаны, контроллер перенаправляет на страницу /top.
