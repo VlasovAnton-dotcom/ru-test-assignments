@@ -1,0 +1,312 @@
+Вариант решения задачи - Vlasov - 04-09-2026
+Важно - Помщоь ГигаЧат +
+
+Разработка мобильного приложения ToDo List на React Native
+Введение
+React Native является отличным выбором для разработки кроссплатформенных мобильных приложений, которые будут одинаково эффективно работать как на устройствах под управлением Android, так и на iOS. В данном руководстве мы рассмотрим процесс создания простого приложения-списка задач (ToDo List), удовлетворяющего следующим основным требованиям:
+•	Отображение списка задач на главном экране;
+•	Возможность добавления новых задач;
+•	Редактирование и удаление существующих задач;
+•	Фильтрация задач по важности;
+•	Помечание просроченных задач;
+•	Сохранение данных между запуском приложения.
+________________________________________
+Установка и настройка проекта
+Шаг 1: Создание нового проекта
+Используем команду npx для быстрой инициализации проекта:
+bashКопировать
+npx react-native init TodoListApp
+После завершения установки перейдите в созданный каталог:
+bashКопировать
+cd TodoListApp
+Шаг 2: Установка необходимых зависимостей
+Установите следующие библиотеки через npm или yarn:
+bashКопировать
+npm install mobx mobx-react-lite @react-navigation/native @react-navigation/stack async-storage react-native-elements
+Также установите дополнительные зависимости для навигации:
+bashКопировать
+npm install react-native-safe-area-context react-native-screens
+И не забудьте установить peer-зависимости:
+bashКопировать
+npm install react-native-reanimated react-native-gesture-handler
+________________________________________
+Структура проекта
+Создайте следующую структуру папок внутри вашего проекта:
+Копировать
+src/
+├── components/
+│   └── TaskItem.js
+├── models/
+│   └── Task.js
+├── screens/
+│   ├── HomeScreen.js
+│   └── AddTaskScreen.js
+├── store/
+│   └── TasksStore.js
+└── App.js
+________________________________________
+Реализация основных компонентов
+Модель задачи (models/Task.js)
+Создадим модель задачи с использованием MobX:
+javascriptКопировать
+import { makeObservable, observable } from 'mobx';
+
+class Task {
+    id = Math.random().toString(36).substr(2, 9);
+    title = '';
+    description = '';
+    isImportant = false;
+    isCompleted = false;
+    dueDate = new Date();
+
+    constructor(title, description, isImportant, dueDate) {
+        this.title = title;
+        this.description = description;
+        this.isImportant = isImportant;
+        this.dueDate = dueDate;
+        makeObservable(this, {
+            title: observable,
+            description: observable,
+            isImportant: observable,
+            isCompleted: observable,
+            dueDate: observable,
+        });
+    }
+}
+
+export default Task;
+Хранилище задач (store/TasksStore.js)
+Реализуем хранилище задач с помощью MobX:
+javascriptКопировать
+import { makeAutoObservable } from "mobx";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import Task from "../models/Task";
+
+class TasksStore {
+    tasks = [];
+
+    constructor() {
+        makeAutoObservable(this);
+        this.loadTasksFromStorage();
+    }
+
+    addTask(task) {
+        this.tasks.push(task);
+        this.saveTasksToStorage();
+    }
+
+    removeTask(id) {
+        this.tasks = this.tasks.filter(t => t.id !== id);
+        this.saveTasksToStorage();
+    }
+
+    updateTask(updatedTask) {
+        const index = this.tasks.findIndex(t => t.id === updatedTask.id);
+        if (index !== -1) {
+            this.tasks[index] = updatedTask;
+            this.saveTasksToStorage();
+        }
+    }
+
+    toggleCompletion(id) {
+        const task = this.tasks.find(t => t.id === id);
+        if (task) {
+            task.isCompleted = !task.isCompleted;
+            this.saveTasksToStorage();
+        }
+    }
+
+    loadTasksFromStorage = async () => {
+        try {
+            const jsonValue = await AsyncStorage.getItem('@tasks');
+            if (jsonValue != null) {
+                this.tasks = JSON.parse(jsonValue).map(
+                    ({id, title, description, isImportant, isCompleted, dueDate}) =>
+                        new Task(title, description, isImportant, new Date(dueDate))
+                );
+            }
+        } catch(e) {
+            console.error('Ошибка при загрузке задач:', e);
+        }
+    };
+
+    saveTasksToStorage = async () => {
+        try {
+            const jsonValue = JSON.stringify(this.tasks.map(t => ({
+                id: t.id,
+                title: t.title,
+                description: t.description,
+                isImportant: t.isImportant,
+                isCompleted: t.isCompleted,
+                dueDate: t.dueDate.toISOString()
+            })));
+            await AsyncStorage.setItem('@tasks', jsonValue);
+        } catch(e) {
+            console.error('Ошибка при сохранении задач:', e);
+        }
+    };
+}
+
+const tasksStore = new TasksStore();
+export default tasksStore;
+Компонент элемента задачи (components/TaskItem.js)
+Компонент для отображения одной задачи:
+javascriptКопировать
+import React from 'react';
+import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
+import { observer } from 'mobx-react-lite';
+import Icon from 'react-native-vector-icons/Ionicons';
+
+const TaskItem = observer(({ task }) => (
+    <TouchableOpacity style={styles.container}>
+        <View>
+            <Text style={[styles.title, task.isCompleted && styles.completedTitle]}>{task.title}</Text>
+            <Text style={styles.description}>{task.description}</Text>
+        </View>
+        <View style={styles.actionsContainer}>
+            <Icon name="checkmark-circle" size={24} color="#007AFF" />
+            <Icon name="trash-outline" size={24} color="#FF5C58" />
+        </View>
+    </TouchableOpacity>
+));
+
+const styles = StyleSheet.create({
+    container: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        paddingVertical: 10,
+        borderBottomWidth: 1,
+        borderColor: '#EFEFEF'
+    },
+    title: {
+        fontSize: 18,
+        marginBottom: 5
+    },
+    completedTitle: {
+        textDecorationLine: 'line-through',
+        opacity: 0.5
+    },
+    description: {
+        fontSize: 14,
+        color: '#666'
+    },
+    actionsContainer: {
+        flexDirection: 'row'
+    }
+});
+
+export default TaskItem;
+Главная страница (screens/HomeScreen.js)
+Отображает список всех задач:
+javascriptКопировать
+import React from 'react';
+import { SafeAreaView, FlatList, StyleSheet } from 'react-native';
+import { observer } from 'mobx-react-lite';
+import TaskItem from '../components/TaskItem';
+import tasksStore from '../store/TasksStore';
+
+const HomeScreen = observer(() => (
+    <SafeAreaView style={styles.container}>
+        <FlatList
+            data={tasksStore.tasks}
+            renderItem={({ item }) => <TaskItem task={item} />}
+            keyExtractor={(item) => item.id}
+        />
+    </SafeAreaView>
+));
+
+const styles = StyleSheet.create({
+    container: {
+        flex: 1,
+        backgroundColor: '#fff',
+        paddingHorizontal: 16
+    }
+});
+
+export default HomeScreen;
+Экран добавления новой задачи (screens/AddTaskScreen.js)
+Позволяет пользователям создавать новую задачу:
+javascriptКопировать
+import React, { useState } from 'react';
+import { SafeAreaView, View, TextInput, Button, StyleSheet } from 'react-native';
+import { observer } from 'mobx-react-lite';
+import tasksStore from '../store/TasksStore';
+
+const AddTaskScreen = observer(() => {
+    const [title, setTitle] = useState('');
+    const [description, setDescription] = useState('');
+    const [isImportant, setIsImportant] = useState(false);
+    const [dueDate, setDueDate] = useState(new Date());
+
+    const handleSubmit = () => {
+        tasksStore.addTask(new Task(title, description, isImportant, dueDate));
+        // Переход обратно на главную страницу
+    };
+
+    return (
+        <SafeAreaView style={styles.container}>
+            <TextInput 
+                placeholder="Название задачи"
+                value={title}
+                onChangeText={setTitle}
+                style={styles.input}
+            />
+            {/* Аналогичные поля для описания, важности и даты */}
+            <Button title="Добавить задачу" onPress={handleSubmit} />
+        </SafeAreaView>
+    );
+});
+
+const styles = StyleSheet.create({
+    container: {
+        flex: 1,
+        padding: 16,
+        backgroundColor: '#fff'
+    },
+    input: {
+        height: 40,
+        borderColor: 'gray',
+        borderWidth: 1,
+        marginBottom: 10,
+        padding: 10
+    }
+});
+
+export default AddTaskScreen;
+Основной файл приложения (App.js)
+Настраивает маршрутизацию и начальную точку входа:
+javascriptКопировать
+import * as React from 'react';
+import { NavigationContainer } from '@react-navigation/native';
+import { createStackNavigator } from '@react-navigation/stack';
+import HomeScreen from './src/screens/HomeScreen';
+import AddTaskScreen from './src/screens/AddTaskScreen';
+
+const Stack = createStackNavigator();
+
+function App() {
+  return (
+    <NavigationContainer>
+      <Stack.Navigator initialRouteName="Home">
+        <Stack.Screen name="Главная" component={HomeScreen} />
+        <Stack.Screen name="Новая задача" component={AddTaskScreen} />
+      </Stack.Navigator>
+    </NavigationContainer>
+  );
+}
+
+export default App;
+________________________________________
+Дополнительная функциональность
+Помимо базовых функций, вы можете реализовать дополнительную функциональность, которая улучшит пользовательский опыт:
+Сортировка задач
+Можно добавить возможность сортировки задач по различным критериям, таким как дата выполнения, важность или статус завершенности.
+Роли пользователей
+Если ваше приложение предназначено для нескольких пользователей, можно ввести систему ролей, где администраторы смогут управлять задачами других пользователей.
+Уведомления
+Интегрируйте уведомления, чтобы напоминать пользователям о приближающихся сроках выполнения задач.
+________________________________________
+Заключение
+Это руководство предоставляет базовую основу для создания эффективного и функционального приложения ToDo List на React Native. Вы можете расширять функционал согласно вашим потребностям и предпочтениям.
+
