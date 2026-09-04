@@ -1,0 +1,106 @@
+Решение - Vlasov - 04-09-2026
+Задание
+Необходимо написать сервис, позволяющий создавать и редактировать сотрудников организации. Сотрудники должны иметь должность, на основе которой рассчитывается их заработная плата. Помимо CRUD-запросов должен присутствовать пагинированный запрос, включающий поле для сортировки, поле для фильтрации (по ФИО-сотрудника или должности).
+Стек технологий:
+•	Бэкенд: C#, .net core 5+
+•	Архитектура: cqrs
+•	База данных: mssql/postgres
+•	Доп задание по фронту: без разницы (angular react razor etc)
+________________________________________
+Решение задачи
+Проектирование модели данных
+Создадим следующие таблицы:
+1.	Employees - сотрудники
+sqlКопировать
+CREATE TABLE Employees (
+    Id INT PRIMARY KEY IDENTITY(1),
+    FirstName NVARCHAR(100) NOT NULL,
+    LastName NVARCHAR(100) NOT NULL,
+    DateOfBirth DATE NOT NULL,
+    HireDate DATE NOT NULL,
+    PositionId INT FOREIGN KEY REFERENCES Positions(Id)
+);
+2.	Positions - должности
+sql
+CREATE TABLE Positions (
+    Id INT PRIMARY KEY IDENTITY(1),
+    Title NVARCHAR(100) NOT NULL,
+    BaseSalary DECIMAL(18, 2) NOT NULL
+);
+3.	EmployeePositions - история должностей сотрудников
+sql
+CREATE TABLE EmployeePositions (
+    EmployeeId INT FOREIGN KEY REFERENCES Employees(Id),
+    PositionId INT FOREIGN KEY REFERENCES Positions(Id),
+    StartDate DATE NOT NULL,
+    EndDate DATE NULL,
+    PRIMARY KEY(EmployeeId, PositionId, StartDate)
+);
+Реализация сервиса
+Создание команды и запроса для CQRS
+csharp
+// Команда для создания сотрудника
+public class CreateEmployeeCommand : IRequest<int>
+{
+    public string FirstName { get; set; }
+    public string LastName { get; set; }
+    public DateTime DateOfBirth { get; set; }
+    public DateTime HireDate { get; set; }
+    public int PositionId { get; set; }
+}
+
+// Запрос для получения списка сотрудников
+public class GetEmployeesQuery : IRequest<PagedResult<EmployeeDto>>
+{
+    public int PageNumber { get; set; } = 1;
+    public int PageSize { get; set; } = 10;
+    public string SortBy { get; set; } = "LastName";
+    public bool Ascending { get; set; } = true;
+    public string Filter { get; set; }
+}
+Обработка команд и запросов
+csharp
+public class EmployeeHandler :
+    IRequestHandler<GetEmployeesQuery, PagedResult<EmployeeDto>>,
+    IRequestHandler<CreateEmployeeCommand, int>,
+    IRequestHandler<UpdateEmployeeCommand>,
+    IRequestHandler<DeleteEmployeeCommand>
+{
+    private readonly IApplicationDbContext _context;
+    
+    public EmployeeHandler(IApplicationDbContext context)
+    {
+        _context = context;
+    }
+
+    // Реализация обработки команд и запросов...
+}
+Скрипты для базы данных
+1.	Выборка всех сотрудников:
+sql
+SELECT * FROM Employees;
+2.	Выборка сотрудников с зарплатой выше 10000:
+sql
+SELECT e.*, p.BaseSalary 
+FROM Employees e
+JOIN Positions p ON e.PositionId = p.Id
+WHERE p.BaseSalary > 10000;
+3.	Удаление сотрудников старше 70 лет:
+sql
+DELETE FROM Employees
+WHERE YEAR(CURRENT_TIMESTAMP) - YEAR(DateOfBirth) >= 70;
+4.	Обновление зарплаты до 15000 сотрудникам с меньшей зарплатой:
+sql
+UPDATE Positions
+SET BaseSalary = 15000
+WHERE BaseSalary < 15000;
+Дополнительное задание
+Создание сайта с горизонтальным навигационным меню, состоящим из двух вкладок:
+1.	"О компании"
+2.	"Сотрудники"
+На первой вкладке используется произвольная верстка. При переходе на вкладку «сотрудники» появляется таблица с колонками:
+| Отдел | Ф.И.О | Дата рождения | Дата устройства на работу | Заработная плата |
+В последней колонке три кнопки: Создать, Редактировать, Удалить. При нажатии на них открываются модальные окна для соответствующих действий.
+Все операции выполняются асинхронно без перезагрузки страницы.
+Таким образом, мы создали полноценный сервис для управления сотрудниками организации с использованием заданного стека технологий и архитектуры CQRS.
+
