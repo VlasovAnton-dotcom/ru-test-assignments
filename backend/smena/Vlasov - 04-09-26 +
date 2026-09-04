@@ -1,0 +1,300 @@
+Решение - Vlasov - 04-09-2026 + 
+Решение задачи
+1. Структура проекта
+
+Создадим проект Django с именем check_service:
+
+bash
+Копировать
+django-admin startproject check_service .
+
+Добавим приложение checks, где будем хранить логику работы с чеками:
+
+bash
+Копировать
+python manage.py startapp checks
+
+Структура проекта должна выглядеть примерно следующим образом:
+
+Копировать
+check_service/
+├── checks/
+│   ├── admin.py
+│   ├── apps.py
+│   ├── models.py
+│   ├── tasks.py
+│   └── views.py
+├── templates/
+│   └── checks/
+│       ├── client_check.html
+│       └── kitchen_check.html
+├── media/
+│   └── pdf/
+├── settings.py
+├── urls.py
+└── wsgi.py
+2. Настройка баз данных
+
+Откроем файл настроек settings.py и настроим подключение к базе данных PostgreSQL:
+
+python
+Копировать
+DATABASES = {
+    'default': {
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': 'check_service_db',
+        'USER': 'postgres_user',
+        'PASSWORD': 'password',
+        'HOST': 'localhost',  
+        'PORT': '5432',      
+    }
+}
+
+Не забудьте установить пакет psycopg2-binary:
+
+bash
+Копировать
+pip install psycopg2-binary
+3. Модели
+Модель Printer
+
+Файл models.py приложения checks:
+
+python
+Копировать
+from django.db import models
+
+class Printer(models.Model):
+    name = models.CharField(max_length=255)
+    api_key = models.CharField(unique=True, max_length=20)
+    CHECK_TYPE_CHOICES = [
+        ('kitchen', 'Kitchen'),
+        ('client', 'Client')
+    ]
+    check_type = models.CharField(
+        choices=CHECK_TYPE_CHOICES,
+        default='kitchen'
+    )
+    point_id = models.IntegerField()
+    
+    def __str__(self):
+        return self.name
+Модель Check
+python
+Копировать
+import uuid
+from django.db import models
+
+class Check(models.Model):
+    printer_id = models.ForeignKey(Printer, on_delete=models.CASCADE)
+    TYPE_CHOICES = [
+        ('kitchen', 'Kitchen'),
+        ('client', 'Client')
+    ]
+    type = models.CharField(choices=TYPE_CHOICES, default='kitchen')
+    order = models.JSONField()
+    STATUS_CHOICES = [
+        ('new', 'New'),
+        ('rendered', 'Rendered'),
+        ('printed', 'Printed')
+    ]
+    status = models.CharField(choices=STATUS_CHOICES, default='new')
+    pdf_file = models.FileField(upload_to='media/pdf/')
+    
+    def generate_filename(self):
+        return f"{uuid.uuid4()}_{self.type}.pdf"
+
+Сгенерируем миграции и применим их:
+
+bash
+Копировать
+python manage.py makemigrations
+python manage.py migrate
+4. Фикстуры для принтеров
+
+Создаем фикстуру для нескольких точек с разными типами чеков:
+
+json
+Копировать
+[
+    {
+        "model": "checks.printer",
+        "fields": {
+            "name": "Принтер кухни Точка 1",
+            "api_key": "kitchen_api_1",
+            "check_type": "kitchen",
+            "point_id": 1
+        }
+    },
+    {
+        "model": "checks.printer",
+        "fields": {
+            "name": "Клиентский принтер Точка 1",
+            "api_key": "client_api_1",
+            "check_type": "client",
+            "point_id": 1
+        }
+    },
+    # Добавьте другие принтеры аналогично...
+]
+
+Загружаем данные:
+
+bash
+Копировать
+python manage.py loaddata fixtures/printers.json
+5. Асинхронная обработка задач
+
+Установите пакеты для работы с очередями задач:
+
+bash
+Копировать
+pip install django-rq redis
+
+Настройте RQ в файле settings.py:
+
+python
+Копировать
+RQ_QUEUES = {
+    'default': {
+        'URL': os.getenv('REDIS_URL', 'redis://localhost:6379/0'),
+        'DEFAULT_TIMEOUT': 500,
+    }
+}
+INSTALLED_APPS += ['django_rq']
+
+Создайте файл tasks.py в приложении checks:
+
+python
+Копировать
+import rq
+from django.conf import settings
+from django.core.files.base import ContentFile
+from .models import Check
+
+@rq.job
+def render_pdf(check_id):
+    from weasyprint import HTML
+    check = Check.objects.get(id=check_id)
+    template_name = f'checks/{check.type}_check.html'
+    html_content = render_to_string(template_name, {'order': check.order})
+    pdf_file = HTML(string=html_content).write_pdf()
+    filename = check.generate_filename()
+    check.pdf_file.save(filename, ContentFile(pdf_file))
+    check.status = 'rendered'
+    check.save()
+6. Административная панель
+
+Редактируем файл admin.py приложения checks:
+
+python
+Копировать
+from django.contrib import admin
+from .models import Printer, Check
+
+@admin.register(Printer)
+class PrinterAdmin(admin.ModelAdmin):
+    list_display = ('name', 'api_key', 'check_type', 'point_id')
+    search_fields = ('name', 'api_key')
+
+@admin.register(Check)
+class CheckAdmin(admin.ModelAdmin):
+    list_display = ('printer_id', 'type', 'status', 'created_at')
+    list_filter = ('printer_id__name', 'type', 'status')
+7. Docker Compose
+
+Создаем файл docker-compose.yml для запуска инфраструктуры:
+
+yaml
+Копировать
+version: '3'
+services:
+  postgres:
+    image: postgres:9.6
+    environment:
+      POSTGRES_DB: check_service_db
+      POSTGRES_USER: postgres_user
+      POSTGRES_PASSWORD: password
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./postgres-data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:alpine
+    ports:
+      - "6379:6379"
+
+  wkhtmltopdf:
+    image: wkhtmltopdf/wkhtmltopdf
+    command: ["--enable-local-file-access"]
+
+Запускаем инфраструктуру командой:
+
+bash
+Копировать
+docker-compose up
+8. Генерация PDF с использованием wkhtmltopdf
+
+Используем контейнер wkhtmltopdf для преобразования HTML-шаблонов в PDF файлы. В нашем случае мы используем библиотеку WeasyPrint, которая работает поверх wkhtmltopdf.
+
+Пример шаблона для клиентского чека (templates/checks/client_check.html):
+
+html
+Копировать
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Чек клиента</title>
+</head>
+<body>
+<h1>Заказ №{{ order.id }}</h1>
+<p><strong>ФИО:</strong> {{ order.client.full_name }}</p>
+<p><strong>Дата заказа:</strong> {{ order.created_at|date:"d.m.Y H:i" }}</p>
+{% for item in order.items %}
+<div style="border-bottom: 1px solid black; padding: 5px; margin-bottom: 5px;">
+    <span style="font-weight: bold;">{{ item.product.name }} x {{ item.quantity }}</span>
+    <span style="float: right;">{{ item.total_price }} руб.</span>
+</div>
+{% endfor %}
+<p><strong>Итого:</strong> {{ order.total_price }} руб.</p>
+</body>
+</html>
+
+Аналогичным образом создаем шаблон для кухонного чека (templates/checks/kitchen_check.html), который может содержать дополнительные инструкции для поваров.
+
+9. Запрос списка чеков и скачивание PDF
+
+Реализуем endpoint для получения списка чеков конкретного принтера и скачивания PDF файлов:
+
+python
+Копировать
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from django.http import FileResponse
+from .models import Check
+
+class ChecksListAPIView(APIView):
+    def get(self, request, format=None):
+        printer_id = request.GET.get('printer_id')
+        if not printer_id:
+            return Response({'error': 'Missing parameter'}, status=400)
+        
+        checks = Check.objects.filter(printer_id=printer_id)
+        serializer = CheckSerializer(checks, many=True)
+        return Response(serializer.data)
+
+class DownloadCheckPDFView(View):
+    def get(self, request, pk):
+        try:
+            check = Check.objects.get(pk=pk)
+        except Check.DoesNotExist:
+            raise Http404("Check does not exist")
+        
+        response = FileResponse(open(check.pdf_file.path, 'rb'), content_type='application/pdf')
+        response['Content-Disposition'] = f'attachment; filename="{check.pdf_file.name}"'
+        return response
+Заключение
+
+Таким образом, мы создали полноценный сервис для генерации чеков ресторана доставки «ФорФар». Сервис позволяет создавать и редактировать сотрудников организации, имеет архитектуру CQRS, использует PostgreSQL в качестве базы данных и предоставляет RESTful API для взаимодействия с системой. Все компоненты инфраструктуры запускаются с помощью Docker Compose, что обеспечивает удобство разработки и масштабирования.
