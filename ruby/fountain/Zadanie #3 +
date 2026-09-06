@@ -1,0 +1,215 @@
+Zadanie #3 - online-banking.md
+Vlasov - 06-09-26 +
+
+Архитектура и ключевые моменты
+Баланс: храним в модели User как decimal (никогда не используй float для денег).
+Транзакции: используем ActiveRecord::Base.transaction для атомарности.
+Валидация: проверяем, что sender.balance >= amount перед списанием.
+Производительность: индексы на sender_id, receiver_id и created_at помогут при тысячах запросов.
+Тестирование: RSpec для контроллеров и моделей.
+1. Миграция и БД
+Если таблицы уже есть, добавь индекс и исправь тип баланса:
+
+ruby
+# db/migrate/20260906000001_add_balance_and_indexes.rb
+class AddBalanceAndIndexes < ActiveRecord::Migration[7.0]
+  def change
+    add_column :users, :balance, :decimal, precision: 10, scale: 2, default: 0
+    add_index :money_transfers, :sender_id
+    add_index :money_transfers, :receiver_id
+    add_index :money_transfers, :created_at
+  end
+end
+Запусти:
+
+bash
+bundle exec rake db:migrate
+2. Модели
+app/models/user.rb
+ruby
+class User < ApplicationRecord
+  has_many :sent_transfers, class_name: 'MoneyTransfer', foreign_key: :sender_id, dependent: :destroy
+  has_many :received_transfers, class_name: 'MoneyTransfer', foreign_key: :receiver_id, dependent: :destroy
+
+  validates :email, presence: true, uniqueness: true
+  # password валидируется на уровне devise/auth, если используется
+end
+app/models/money_transfer.rb
+ruby
+class MoneyTransfer < ApplicationRecord
+  belongs_to :sender, class_name: 'User', foreign_key: :sender_id
+  belongs_to :receiver, class_name: 'User', foreign_key: :receiver_id
+
+  validates :amount, numericality: { greater_than: 0 }
+  validate :sender_has_sufficient_balance, on: :create
+
+  private
+
+  def sender_has_sufficient_balance
+    return if sender.balance >= amount
+    errors.add(:base, 'Недостаточно средств на балансе')
+  end
+end
+3. Контроллеры
+app/controllers/money_transfers_controller.rb
+ruby
+class MoneyTransfersController < ApplicationController
+  before_action :authenticate_user! # если есть auth
+
+  def create
+    @transfer = MoneyTransfer.new(transfer_params)
+
+    ActiveRecord::Base.transaction do
+      if @transfer.valid? && @transfer.sender.balance >= @transfer.amount
+        @transfer.sender.update!(balance: @transfer.sender.balance - @transfer.amount)
+        @transfer.receiver.update!(balance: @transfer.receiver.balance + @transfer.amount)
+        @transfer.save!
+        render json: { status: 'success', transfer: @transfer }, status: :created
+      else
+        render json: { status: 'error', errors: @transfer.errors.full_messages }, status: :unprocessable_entity
+      end
+    rescue ActiveRecord::RecordInvalid => e
+      render json: { status: 'error', errors: e.record.errors.full_messages }, status: :unprocessable_entity
+    end
+  end
+
+  def index
+    @transfers = MoneyTransfer.includes(:sender, :receiver).order(created_at: :desc)
+    render json: @transfers
+  end
+
+  private
+
+  def transfer_params
+    params.require(:money_transfer).permit(:sender_id, :receiver_id, :amount)
+  end
+end
+Если API не требуется, а нужен обычный HTML-поток, замени render json на redirect_to и render :new с флеш-сообщениями.
+
+app/controllers/users_controller.rb
+ruby
+class UsersController < ApplicationController
+  before_action :authenticate_user!
+
+  def show
+    @user = User.find(params[:id])
+    @transfers_between = MoneyTransfer
+      .where('(sender_id = ? AND receiver_id = ?) OR (sender_id = ? AND receiver_id = ?)',
+             current_user.id, @user.id,
+             @user.id, current_user.id)
+      .includes(:sender, :receiver)
+      .order(created_at: :desc)
+  end
+end
+4. Views (заполняем TODO)
+app/views/users/show.html.erb
+erb
+<h1>Профиль пользователя <%= @user.email %></h1>
+
+<h2>Переводы между вами и <%= @user.email %></h2>
+<table>
+  <thead>
+    <tr>
+      <th>Дата</th>
+      <th>От кого</th>
+      <th>Кому</th>
+      <th>Сумма</th>
+    </tr>
+  </thead>
+  <tbody>
+    <% @transfers_between.each do |t| %>
+      <tr>
+        <td><%= t.created_at.strftime('%Y-%m-%d %H:%M') %></td>
+        <td><%= t.sender.email %></td>
+        <td><%= t.receiver.email %></td>
+        <td><%= number_to_currency(t.amount) %></td>
+      </tr>
+    <% end %>
+  </tbody>
+</table>
+app/views/money_transfers/index.html.erb (если нужен HTML-вариант)
+erb
+<h1>История переводов</h1>
+<table>
+  <thead>
+    <tr>
+      <th>От кого</th>
+      <th>Кому</th>
+      <th>Сумма</th>
+      <th>Дата</th>
+    </tr>
+  </thead>
+  <tbody>
+    <% @transfers.each do |t| %>
+      <tr>
+        <td><%= t.sender.email %></td>
+        <td><%= t.receiver.email %></td>
+        <td><%= number_to_currency(t.amount) %></td>
+        <td><%= t.created_at.strftime('%Y-%m-%d %H:%M') %></td>
+      </tr>
+    <% end %>
+  </tbody>
+</table>
+5. RSpec тесты (базовый набор)
+Модель: spec/models/money_transfer_spec.rb
+ruby
+require 'rails_helper'
+
+RSpec.describe MoneyTransfer, type: :model do
+  let(:sender) { create(:user, balance: 1000) }
+  let(:receiver) { create(:user, balance: 0) }
+
+  it 'is valid with sufficient balance' do
+    transfer = MoneyTransfer.new(sender: sender, receiver: receiver, amount: 500)
+    expect(transfer).to be_valid
+  end
+
+  it 'is invalid with insufficient balance' do
+    transfer = MoneyTransfer.new(sender: sender, receiver: receiver, amount: 2000)
+    expect(transfer).not_to be_valid
+    expect(transfer.errors[:base]).to include('Недостаточно средств на балансе')
+  end
+end
+Контроллер: spec/controllers/money_transfers_controller_spec.rb
+ruby
+require 'rails_helper'
+
+RSpec.describe MoneyTransfersController, type: :controller do
+  let(:user) { create(:user, balance: 1000) }
+  let(:other_user) { create(:user, balance: 0) }
+
+  before { sign_in user } # если используется devise
+
+  describe 'POST #create' do
+    it 'creates a transfer and updates balances' do
+      expect {
+        post :create, params: { money_transfer: { sender_id: user.id, receiver_id: other_user.id, amount: 500 } }
+      }.to change { user.reload.balance }.from(1000).to(500)
+      expect(other_user.reload.balance).to eq(500)
+      expect(response).to have_http_status(:created)
+    end
+
+    it 'returns error when insufficient balance' do
+      post :create, params: { money_transfer: { sender_id: user.id, receiver_id: other_user.id, amount: 2000 } }
+      expect(response).to have_http_status(:unprocessable_entity)
+    end
+  end
+end
+6. Что ещё учесть под нагрузку (тысячи запросов в секунду)
+Индексы уже добавлены.
+Очереди: для тяжёлых операций (отправка уведомлений, логирование) используй Sidekiq/Resque.
+Кэширование: Rails.cache для списков переводов, если они часто запрашиваются.
+Оптимистичные блокировки: lock_version в users для предотвращения гонок при одновременных переводах.
+Как быстро проверить
+Создай пару пользователей через консоль или seed.
+Настрой баланс вручную: User.first.update!(balance: 1000).
+Отправь POST на /money_transfers с JSON:
+json
+{
+  "money_transfer": {
+    "sender_id": 1,
+    "receiver_id": 2,
+    "amount": 500
+  }
+}
+Проверь, что баланс изменился и запись появилась в MoneyTransfers.
