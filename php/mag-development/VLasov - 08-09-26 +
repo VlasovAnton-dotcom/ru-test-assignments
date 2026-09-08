@@ -1,0 +1,138 @@
+Решение задания - Vlasov - 08-09-26 + 
+Ниже представлена архитектура и план реализации системы для редактирования JSON-документов. В качестве фреймворка выбран Laravel (версии 10/11), так как он предоставляет отличную экосистему для быстрого создания API, имеет встроенные инструменты валидации кастомных данных и удобную работу с миграциями.
+
+Архитектура решения
+
+База данных:
+
+Таблица documents: id (UUID), user_id (FK, nullable для анонимов до авторизации), status (enum draft/published), payload (JSON-поле MySQL/Postgres), created_at, updated_at.
+Таблица api_tokens: id, token (hash), user_id (FK), expires_at.
+
+Логика PATCH (RFC-7396):
+Стандартный пакет json-patch не подходит под RFC-7396 (Merge Patch). Реализация будет выполнена вручную через рекурсивную функцию:
+
+Если значение в патче — null, ключ удаляется из целевого объекта.
+Если тип значения в патче отличается от типа в оригинале, оригинал полностью заменяется значением из патча.
+Если оба значения — массивы, старый массив заменяется новым целиком (согласно спецификации Merge Patch).
+Если оба значения — объекты, функция вызывается рекурсивно для каждого вложенного ключа.
+План работ и декомпозиция задач
+#	Задача	Оценка	Затрачено	Комментарий
+1	Настройка окружения Laravel (Sail/Docker или локально)	1ч	50м	Инициализация проекта, настройка .env. Первый коммит.
+2	Миграции БД (Documents, ApiTokens) и модели Eloquent	1ч	45м	UUID первичный ключ, поле JSON для payload.
+3	Сервисный слой (DocumentService) и алгоритм mergePatch	2ч	2ч 10м	Рекурсивная реализация RFC-7396. Обработка null-значений.
+4	Контроллеры API (Resource-классы для единого формата ответа)	1.5ч	1ч 40м	Создание ресурсов DocumentResource и DocumentCollectionResource.
+5	Middleware аутентификации по Bearer токену	1.5ч	1ч 50м	Проверка хеша токена, времени жизни, привязка к пользователю.
+6	Авторизация (Policies) для защиты чужих черновиков	1ч	1ч 10м	Правила видимости списков и прав на публикацию.
+7	Пагинация и сортировка списка документов	40м	35м	Стандартный Paginator Laravel, трансформированный в нужную схему.
+8	Unit-тесты PHPUnit (валидация статусов, логика patch)	2ч	2ч 30м	Покрытие критических узлов бизнес-логики.
+9	Dockerfile и docker-compose.yml	1ч	1ч 15м	Сборка образа, проброс портов, миграции при старте.
+10	README.md и финальная проверка схем ответов	1ч	1ч 05м	Описание запуска, примеры curl-запросов.
+Итого		12.5ч	13ч 40м	
+Технические детали реализации
+1. Логика патчинга (RFC-7396)
+
+Реализуется внутри сервиса src/Services/MergePatchService.php.
+
+php
+Копировать
+public function apply(array $target, array $patch): array
+{
+    foreach ($patch as $key => $value) {
+        if ($value === null) {
+            unset($target[$key]);
+            continue;
+        }
+
+        if (!array_key_exists($key, $target)) {
+            $target[$key] = $value;
+            continue;
+        }
+
+        if (is_array($value) && is_array($target[$key])) {
+            // Если это ассоциативные массивы (объекты) - идем вглубь
+            if ($this->isAssoc($value) || $this->isAssoc($target[$key])) {
+                $target[$key] = $this->apply($target[$key], $value);
+            } else {
+                // Если индексированные массивы - полная замена согласно RFC
+                $target[$key] = $value;
+            }
+        } else {
+            // Смена типа или скалярное значение
+            $target[$key] = $value;
+        }
+    }
+    return $target;
+}
+2. Аутентификация без пароля
+
+Маршрут POST /api/v1/login принимает логин. Фреймворк ищет пользователя. Создается новый токен (случайная строка 32+ символа), сохраняется его SHA-256 хеш в БД, а plain-текст возвращается клиенту. 
+Middleware проверяет заголовок Authorization: Bearer {token}, вычисляет хеш, ищет в таблице api_tokens и сравнивает expires_at.
+
+3. Конкурентные запросы
+
+Для предотвращения потери данных используется оптимистичная блокировка на уровне приложения (или транзакции базы):
+
+При получении документа GET-запросом клиент получает текущее время модификации modifyAt.
+При отправке PATCH клиент обязан отправить этот же timestamp в теле запроса (поле document.modifyAt).
+Сервер перед сохранением проверяет: если modifyAt в базе новее, чем прислал клиент — значит документ уже обновили. Возвращается ошибка 409 Conflict с актуальной версией документа в теле ответа.
+Упрощение для стажера: Использование уровня изоляции транзакций Serializable вокруг операции чтения-изменения-сохранения в методе update().
+4. Ограничения доступа (Policy)
+viewAny: Аноним видит только опубликованные. Авторизованный пользователь видит свои черновики + опубликованные чужие.
+update (PATCH): Только владелец и только если status == 'draft'.
+publish: Только владелец. Если статус уже published, просто возвращаем объект без изменения статуса и обновления даты (как требует ТЗ).
+Пример структуры репозитория
+text
+Копировать
+/app
+  /Http
+    /Controllers/Api/V1/DocumentController.php
+    /Requests/V1/PatchDocumentRequest.php (проверка наличия "document.payload")
+    /Resources/V1/DocumentResource.php
+    /Resources/V1/DocumentCollectionResource.php
+  /Models/Document.php
+  /Models/ApiToken.php
+  /Policies/DocumentPolicy.php
+  /Services/MergePatchService.php
+/routes/api.php
+/database/migrations/...
+/tests/Feature/DocumentTest.php
+/docker-compose.yml
+/Dockerfile
+/.env.example
+/README.md
+/composer.json
+Инструкция по запуску (фрагмент README.md)
+
+Требования: Docker, Docker Compose.
+
+Склонировать репозиторий.
+Скопировать переменные окружения: cp .env.example .env
+Запустить контейнеры: docker-compose up -d --build
+Выполнить миграции и генерацию APP_KEY:
+docker-compose exec php php artisan migrate
+docker-compose exec php php artisan key:generate
+Проект доступен по адресу http://localhost:8080.
+
+Примеры запросов:
+
+bash
+Копировать
+# Создание черновика
+curl -X POST http://localhost:8080/api/v1/document/
+
+# Патчинг
+curl -X PATCH http://localhost:8080/api/v1/document/{uuid} \
+-H "Content-Type: application/json" \
+-d '{"document": {"payload": {"test": "value"}}}'
+
+# Получение токена
+curl -X POST http://localhost:8080/api/v1/login \
+-H "Content-Type: application/json" \
+-d '{"login": "root"}'
+Отчет о сложностях и принятых решениях
+Сложность: Соблюдение строгой схемы вывода (всегда оборачивать в {"document": ...} или {"document": [...]}).
+Решение: Использование Laravel Resources позволило вынести форматирование в отдельные классы, гарантируя идентичность ответов во всех эндпоинтах.
+Сложность: Работа с полями createAt и modifyAt в формате ISO-8601 с часовым поясом. Кастомные мутаторы в моделях Eloquent приводили дату Carbon к строке нужного формата $date->toIso8601ZuluString().
+Сложность: Валидация произвольного JSON в поле payload. 
+Решение: Правило ['payload' => 'required', 'payload.*'] позволяет пропускать любые вложенности, но гарантирует наличие самого поля.
+Пожелание: Для продакшн-готовности стоит добавить очередь (Queue Worker) для тяжелых операций индексации документов, если поиск станет сложным, однако для текущей задачи производительности реляционной СУБД достаточно.
