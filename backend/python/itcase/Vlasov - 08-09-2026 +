@@ -1,0 +1,101 @@
+Решение задачи - Vlasov - 08-09-2026 +
+Реализую полный проект Django-каталога со всеми требованиями и бонусами. Разобью на файлы и соберу в архив.
+Готово! Проект собран. Вот полный разбор реализации.
+
+## Структура проекта
+
+```
+catalog_project/
+├── manage.py
+├── requirements.txt
+├── README.md
+├── config/
+│   ├── settings/
+│   │   ├── __init__.py          # грузит core + local
+│   │   ├── core.py              # базовые настройки
+│   │   └── local.py.example     # шаблон локального файла
+│   ├── urls.py
+│   ├── wsgi.py
+│   └── asgi.py
+├── catalog/
+│   ├── models.py                # Product, ProductImage, ProductParameter
+│   ├── admin.py                 # inline-формы для Django Admin
+│   ├── serializers.py           # list/detail/фильтры
+│   ├── filters.py               # фильтрация по названию и параметрам
+│   ├── views.py                 # ProductViewSet
+│   ├── urls.py                  # DRF роутер
+│   └── fixtures/
+│       └── catalog_data.json    # 5 товаров, 8 изображений, 25 параметров
+└── media/products/              # placeholder-картинки для фикстур
+```
+
+## Модели (`catalog/models.py`)
+
+Три модели:
+
+- **Product** — название, описание, базовая цена, порядок сортировки
+- **ProductImage** — файл, подпись, порядок сортировки (FK на Product, `related_name='images'`)
+- **ProductParameter** — название, значение, цена, порядок сортировки (FK на Product, `related_name='parameters'`)
+
+У параметров добавил индекс на `(name, value)` для быстрой фильтрации.
+
+## Django Admin (`catalog/admin.py`)
+
+Товар редактируется с двумя inline-формами — изображения и параметры прямо на странице товара. Поля `sort_order` доступны для inline-редактирования в списке. Изображения и параметры имеют отдельные разделы в админке с фильтрами и поиском.
+
+## REST API (`catalog/views.py`, `catalog/serializers.py`)
+
+| Endpoint | Что делает |
+|---|---|
+| `GET /api/products/` | Список товаров (краткая инфо, пагинация по 10) |
+| `GET /api/products/{id}/` | Детальная инфо с вложенными изображениями и параметрами |
+| `GET /admin/` | Django Admin |
+
+## Бонусы
+
+**Фильтрация по параметрам** — через `django-filter` + кастомный `ProductFilter`:
+- `?name=iphone` — поиск по названию
+- `?param_Бренд=Apple` — фильтр по значению параметра
+- Можно комбинировать несколько параметров
+
+**Список параметров для фильтрации** — `GET /api/products/filters/`:
+- Только параметры, которые есть хотя бы у одного товара
+- Каждый параметр содержит `product_count` (у скольких товаров он есть)
+- У каждого параметра — список уникальных значений со своими `product_count`
+
+**Вложенные страницы с пагинацией**:
+- `GET /api/products/{id}/images/` — изображения товара
+- `GET /api/products/{id}/parameters/` — параметры товара
+
+## Запуск
+
+```bash
+python3 -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
+cp config/settings/local.py.example config/settings/local.py
+# В local.py указать пароль к БД
+
+createdb catalog_db
+python manage.py migrate
+python manage.py loaddata catalog_data
+python manage.py createsuperuser
+python manage.py runserver
+```
+
+## requirements.txt
+
+```
+Django==3.2.*
+djangorestframework==3.14.*
+django-filter==23.*
+psycopg2-binary==2.9.*
+django-redis==5.2.*
+Pillow==10.*
+drf-spectacular==0.26.*
+```
+
+Архив с проектом: [catalog_project.zip](catalog_project.zip)
+
+Фикстуры содержат 5 товаров (iPhone 15 Pro, Samsung Galaxy S24 Ultra, Google Pixel 8 Pro, Xiaomi 14 Pro, Nothing Phone 2), 8 изображений и 25 параметров с реалистичными данными — бренды, цвета, объёмы памяти, ОС. Все картинки-заглушки сгенерированы в `media/products/`.
+
+Хотите, могу добавить тесты, кэширование на Redis для ответов API или Docker-compose для быстрого запуска?
