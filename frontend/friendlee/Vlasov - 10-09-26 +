@@ -1,0 +1,170 @@
+Vlasov - 10-09-26 - Help Giga Chat
+Ниже представлена полная структура проекта, логика реализации и примерный вид репозитория. Поскольку у меня нет доступа к вашему макету в Figma, я опираюсь на стандартные требования ТЗ (калькулятор лизинга) и типовые решения для подобных интерфейсов.
+
+1. Структура git-репозитория
+Копировать
+/calculator-project/
+├── .gitignore                 # Игнорирует node_modules/, dist/, *.log
+├── package.json               # Зависимости: gulp, sass, postcss, autoprefixer, browser-sync
+├── README.md                  # Инструкции по запуску и описание логики
+├── bower.json / assets.json   # Необязательно (если используется Bower), иначе удаляется
+├── src/
+│   ├── fonts/                 # Шрифты Nekst, Gilroy (.woff2, .woff)
+│   │   ├── Gilroy-Bold.woff2
+│   │   ├── Gilroy-Regular.woff2
+│   │   └── ...
+│   ├── images/                # SVG-спрайты, логотипы, иконки
+│   ├── js/
+│   │   ├── components/
+│   │   │   ├── calculator.js  # Логика калькулятора (класс Calculator)
+│   │   │   └── slider.js      # Класс кастомного ползунка с обработкой input
+│   │   ├── utils/
+│   │   │   └── formatters.js  # Форматирование чисел (пробелы как разделители тысяч)
+│   │   └── main.js            # Инициализация компонентов при DOMContentLoaded
+│   ├── styles/
+│   │   ├── abstracts/         # Переменные ($breakpoints, $colors, $font-families)
+│   │   ├── base/              # normalize.css, typography.scss
+│   │   ├── components/        # _button.scss, _input.scss, _slider-track.scss (БЭМ-блоки)
+│   │   ├── layout/            # _header.scss, _footer.scss, _container.scss
+│   │   ├── pages/             # _main.scss (стили страницы калькулятора)
+│   │   └── style.scss         # Главный файл, импортирующий все остальные
+│   └── index.html             # Разметка по БЭМ
+├── gulpfile.js                # Сборка стилей (SASS -> CSS), копирование файлов, BrowserSync
+└── dist/                      # Собранная версия (генерируется автоматически)
+    ├── css/
+    │   └── style.min.css
+    ├── js/
+    │   └── main.min.js
+    ├── fonts/
+    ├── images/
+    └── index.html
+2. Коммиты (разбиение задачи на подзадачи)
+feat: init project structure — создание папок src, инициализация npm/gulp, базовый .gitignore.
+chore: add html skeleton & reset — разметка index.html по правилам БЭМ (block__element--modifier), подключение нормализации или собственного ресета.
+feat: setup font-face and variables — подключение шрифтов Nekst/Gilroy через @font-face, создание SCSS-переменных цветов, размеров и брейкпоинтов.
+feat: implement desktop layout (1440px) — верстка десктопной версии строго по сетке Фигмы, проверка отступов до пикселя.
+feat: implement tablet layout (768px) — адаптация под планшетную версию согласно макету.
+feat: implement mobile layout (320px) — мобильная версия, перестройка сетки, сворачивание элементов.
+refactor: refine intermediate breakpoints (1120px) — промежуточная адаптация, если она предусмотрена дизайном.
+style: finalize scss architecture — финальная чистка кода, объединение медиазапросов (gulp-group-css-media-queries).
+feat: implement core calculator logic — написание классов Calculator и Slider. Связывание полей ввода и range-элементов. Реализация формул из ТЗ.
+fix: enforce boundaries and live update — ограничение значений min/max, сброс некорректного ввода клавиатуры к ближайшему числу, динамический пересчет при движении ползунка.
+feat: format currency values — добавление пробелов в числа (например, 1 500 000), отображение процента взноса рядом с суммой.
+feat: handle submit button click — деактивация кнопки «Оформить заявку», сбор данных, формирование JSON, вывод через alert().
+test: validate w3c compliance — прогон HTML через validator.w3.org, исправление ошибок вложенности тегов и атрибутов.
+docs: write comprehensive README.md — инструкция по установке Node.js, пакетов (npm i) и запуску сборки (npm run dev). Описание реализованного функционала и допущений.
+3. Ключевые технические моменты реализации
+
+Сборка (Gulp):
+В gulpfile.js настраиваются пайплайны:
+
+SASS компилируется в CSS с помощью sass() (dart-sass).
+Добавляется автопрефиксер (PostCSS + Autoprefixer) для поддержки актуальных версий браузеров.
+Медиазапросы группируются плагином gulp-group-css-media-queries.
+JS собирается конкатенацией без тяжелой транспиляции (ES6+ поддерживается современными браузерами), либо через Vite/WBpack, если требуется поддержка старого синтаксиса.
+Поднимается локальный сервер с автообновлением (BrowserSync).
+
+Верстка и PixelPerfect:
+
+Используется относительная единица rem (база 16px), но контрольные размеры сверяются с растровой подложкой в Фигме через наложение полупрозрачного PNG в инспекторе браузера.
+Сетка строится на Flexbox или CSS Grid.
+Для идеальной резкости бордеров рекомендуется использовать transform: translateZ(0) или outline вместо тонкой рамки там, где это допустимо макетом.
+
+Калькулятор (JS):
+Логику лучше всего вынести в отдельный класс.
+
+javascript
+Копировать
+// src/js/components/calculator.js (упрощенный фрагмент)
+class Calculator {
+    constructor(config) {
+        this.state = { 
+            carCost: config.carCost, 
+            downPayment: config.downPayment, 
+            term: config.term,
+            rate: 0.05 // Жестко задано в формуле из ТЗ
+        };
+        this.bindUI();
+        this.updateAll();
+    }
+
+    bindUI() {
+        // Привязка событий input к полям и слайдерам
+        document.querySelector('.calculator__input[name="cost"]').addEventListener('input', (e) => {
+            const val = Math.max(1500000, Math.min(10000000, Number(e.target.value.replace(/\D/g, ''))));
+            this.state.carCost = val;
+            e.target.value = this.formatNumber(val);
+            this.recalcDownPaymentPercent(); // Пересчет % при изменении стоимости
+            this.updateAll();
+        });
+        
+        // Аналогично для других полей и 'input' event от ползунков (range)
+    }
+
+    calculateMonthlyPayment() {
+        const principal = this.state.carCost - this.state.downPayment;
+        const n = this.state.term;
+        const r = this.state.rate;
+        if (n === 0) return 0;
+        // Формула из ТЗ
+        return principal * (r * Math.pow(1 + r, n)) / (Math.pow(1 + r, n) - 1);
+    }
+
+    recalcDownPaymentPercent() {
+        // Обновляет скрытое поле или визуальное отображение "%"
+        const percent = Math.round((this.state.downPayment / this.state.carCost) * 100);
+        // ... обновление UI
+    }
+    
+    formatNumber(num) {
+        return new Intl.NumberFormat('ru-RU').format(num);
+    }
+}
+
+Ползунки (Range Input):
+Для кроссбраузерности стилизации стандартный <input type="range"> оборачивается в кастомный блок .slider. В JavaScript отслеживается событие input (а не change), чтобы значения обновлялись мгновенно во время движения пальца/курсора.
+
+Ограничения ввода:
+При событии blur или keydown (Enter) значение поля проверяется. Если оно меньше минимума — устанавливается минимум. Если больше максимума — максимум. При вводе с клавиатуры символы фильтруются через regex /[^0-9]/g.
+
+4. Содержимое README.md (фрагмент)
+markdown
+Копировать
+# Калькулятор лизинга
+
+Проект представляет собой адаптивную верстку калькулятора лизинга автомобиля со связкой интерактивных полей и ползунков.
+
+## Технологический стек
+*   HTML5 (W3C Valid)
+*   SCSS (архитектура ITCSS/BEM)
+*   Gulp
+*   Vanilla JS (ES6+)
+*   Fonts: Nekst, Gilroy
+
+## Запуск проекта
+1. Убедитесь, что у вас установлены Node.js и Git.
+2. Склонируйте репозиторий: `git clone <repo-link>`
+3. Перейдите в папку проекта: `cd calculator-project`
+4. Установите зависимости: `npm install`
+5. Запустите режим разработки с горячей перезагрузкой: `npm run dev`
+6. Откройте ссылку из консоли (обычно http://localhost:3000).
+
+Для production-сборки используйте команду `npm run build`.
+
+## Особенности реализации
+*   **Связь полей:** Ползунки и текстовые инпуты синхронизированы. Изменение одного немедленно отражается в другом.
+*   **Динамика:** Все расчеты происходят на лету во время использования ползунков.
+*   **Границы:** Значения жестко ограничены диапазонами из ТЗ (Стоимость: 1.5–10 млн; Взнос: 10–60%; Срок: 6–120 мес).
+*   **Форматирование:** Числа в полях имеют пробелы в качестве разделителей тысяч.
+*   **Валидность:** Код проходит проверку W3C Validator без ошибок.
+
+## Допущения (ввиду отсутствия исходников Figma)
+*   Цветовая палитра взята стандартная: основной текст #1A1A1A, акцентный #0057FF.
+*   Анимации микро-взаимодействий (hover/focus) реализованы через CSS transition 0.2s ease.
+*   Макет на 1120px является пропорциональным сжатием между 1440 и 768.
+*   Свое название коммитов можно уточнить после анализа конкретного макета.
+5. Рекомендации перед отправкой
+Проверьте пути к шрифтам. Они должны подключаться локально, а не через Google Fonts, так как заказчик предоставил конкретные файлы.
+Убедитесь, что в формах используются правильные типы (type="text" с паттерном или type="number") и атрибуты min, max.
+Кнопка отправки должна иметь состояние disabled сразу после клика, чтобы предотвратить дублирование заявок.
+Проверьте работу на реальных устройствах или в DevTools Throttling (Slow 3G), чтобы убедиться, что перерисовки при движении ползунка не вызывают фризов.
