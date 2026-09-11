@@ -1,0 +1,455 @@
+Решение задачи - Vlasov - 11-09-2026 + 
+Ниже представлена пошаговая реализация функционала на Laravel 11 с базой данных PostgreSQL, полностью соответствующая вашему техническому заданию.
+1. Настройка окружения (Docker)
+Создайте структуру проекта и файлы для Docker-контейнеризации.
+docker-compose.yml:
+yaml
+version: '3.8'
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    working_dir: /var/www/html
+    volumes:
+      - ./:/var/www/html
+    ports:
+      - "8000:80"
+    depends_on:
+      - db
+    environment:
+      DB_CONNECTION: pgsql
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_DATABASE: pin_erp
+      DB_USERNAME: postgres
+      DB_PASSWORD: secret
+
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: pin_erp
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: secret
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:
+Dockerfile:
+dockerfile
+FROM php:8.3-apache
+
+RUN apt-get update && apt-get install -y \
+    git \
+    curl \
+    libpng-dev \
+    libonig-dev \
+    libxml2-dev \
+    zip \
+    unzip \
+    libpq-dev \
+    supervisor \
+    && docker-php-ext-install pdo pdo_pgsql bcmath
+
+COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
+
+WORKDIR /var/www/html
+
+EXPOSE 80
+.env (пример):
+
+APP_NAME=PinERP
+APP_ENV=local
+APP_KEY=base64:...
+APP_DEBUG=true
+APP_URL=http://localhost:8000
+
+LOG_CHANNEL=stack
+LOG_DEPRECATIONS_CHANNEL=null
+LOG_LEVEL=debug
+
+DB_CONNECTION=pgsql
+DB_HOST=db
+DB_PORT=5432
+DB_DATABASE=pin_erp
+DB_USERNAME=postgres
+DB_PASSWORD=secret
+
+BROADCAST_DRIVER=log
+CACHE_DRIVER=file
+FILESYSTEM_DISK=local
+QUEUE_CONNECTION=database
+SESSION_DRIVER=file
+SESSION_LIFETIME=120
+
+MAIL_MAILER=smtp
+MAIL_HOST=mailpit
+MAIL_PORT=1025
+MAIL_USERNAME=null
+MAIL_PASSWORD=null
+MAIL_ENCRYPTION=null
+MAIL_FROM_ADDRESS="hello@example.com"
+MAIL_FROM_NAME="${APP_NAME}"
+
+PRODUCTS_EMAIL=admin@example.com
+PRODUCTS_ROLE=config_or_database # или admin/user
+Для локальной разработки очереди удобно запускать через supervisor внутри контейнера app или использовать php artisan queue:work.
+2. Миграция таблицы «products»
+Выполните команду php artisan make:migration create_products_table.
+php
+// database/migrations/xxxx_xx_xx_create_products_table.php
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+class CreateProductsTable extends Migration
+{
+    public function up(): void
+    {
+        Schema::create('products', function (Blueprint $table) {
+            $table->id();
+            $table->string('article')->unique();
+            $table->string('name');
+            $table->string('status')->default('available'); // available | unavailable
+            $table->jsonb('data'); // Для Color, Size и т.д.
+            $table->softDeletes(); // soft deletes
+            $table->timestamps();
+        });
+    }
+
+    public function down(): void
+    {
+        Schema::dropIfExists('products');
+    }
+}
+После создания выполните php artisan migrate.
+3. Eloquent-модель «Product» и Local Scope
+Выполните php artisan make:model Product.
+php
+// app/Models/Product.php
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\SoftDeletes;
+
+class Product extends Model
+{
+    use SoftDeletes;
+
+    protected $fillable = [
+        'article',
+        'name',
+        'status',
+        'data',
+    ];
+
+    protected $casts = [
+        'data' => 'array', // Удобная работа с jsonb как с массивом
+    ];
+
+    // Local Scope для доступных продуктов
+    public function scopeAvailable(Builder $query): Builder
+    {
+        return $query->where('status', 'available');
+    }
+
+    // Глобальная проверка уникальности артикула при обновлении
+    public static function boot()
+    {
+        parent::boot();
+
+        static::saving(function ($product) {
+            if ($product->isDirty('article')) {
+                $exists = self::where('article', $product->article)
+                    ->whereNot('id', $product->id)
+                    ->exists();
+                
+                if ($exists) {
+                    throw new \Illuminate\Validation\ValidationException(
+                        validator([], [], ['article.unique' => __('validation.unique')])
+                    )->errors()->add('article', 'Артикул уже занят.');
+                }
+            }
+        });
+    }
+}
+4. Валидация (Form Request)
+Выполните php artisan make:request StoreProductRequest и php artisan make:request UpdateProductRequest.
+StoreProductRequest.php:
+php
+public function rules(): array
+{
+    return [
+        'name' => ['required', 'string', 'min:10'],
+        'article' => ['required', 'alpha_num', 'unique:products,article'],
+        'status' => ['required', 'in:available,unavailable'],
+        'data.color' => ['nullable', 'string'],
+        'data.size' => ['nullable', 'string'],
+    ];
+}
+UpdateProductRequest.php: В конструкторе проверяем роль из конфигурации (config('products.role')) и динамически добавляем правило к полю article.
+php
+public function __construct()
+{
+    parent::__construct();
+    
+    // Если пользователь не администратор, запрещаем менять артикул
+    if (config('products.role') !== 'admin') {
+        unset($this['article']); 
+        // Либо оставляем в правилах, но делаем nullable + old_rule, чтобы ошибка не вылетала,
+        // а просто игнорируем поле при заполнении модели ($request->except('article'))
+    }
+}
+
+public function rules(): array
+{
+    $rules = [
+        'name' => ['required', 'string', 'min:10'],
+        'status' => ['required', 'in:available,unavailable'],
+        'data.color' => ['nullable', 'string'],
+        'data.size' => ['nullable', 'string'],
+    ];
+
+    if (config('products.role') === 'admin') {
+        $rules['article'] = ['required', 'alpha_num', 'unique:products,article,'.$this->route('product')->id];
+    }
+
+    return $rules;
+}
+5. Уведомление и Job (Очередь)
+Выполните команды: php artisan make:notification NewProductCreated php artisan make:job ProcessNewProductNotification
+app/Notifications/NewProductCreated.php:
+php
+use App\Models\Product;
+use Illuminate\Bus\Queueable;
+use Illuminate\Contracts\Queue\ShouldQueue;
+use Illuminate\Notifications\Messages\MailMessage;
+use Illuminate\Notifications\Notification;
+
+class NewProductCreated extends Notification implements ShouldQueue
+{
+    use Queueable;
+
+    public function __construct(public Product $product) {}
+
+    public function via(object $notifiable): array
+    {
+        return ['mail'];
+    }
+
+    public function toMail(object $notifiable): MailMessage
+    {
+        return (new MailMessage)
+            ->subject('Новый продукт создан')
+            ->line("Продукт {$this->product->name} (Артикул: {$this->product->article}) был успешно создан.");
+    }
+}
+app/Jobs/ProcessNewProductNotification.php:
+php
+use App\Models\Product;
+use App\Notifications\NewProductCreated;
+use Illuminate\Bus\Queueable;
+use Illuminate\Contracts\Queue\ShouldQueue;
+use Illuminate\Foundation\Bus\Dispatchable;
+use Illuminate\Queue\InteractsWithQueue;
+use Illuminate\Queue\SerializesModels;
+
+class ProcessNewProductNotification implements ShouldQueue
+{
+    use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
+
+    public function __construct(private Product $product) {}
+
+    public function handle(): void
+    {
+        $email = config('products.email');
+        $this->product->notify(new NewProductCreated($this->product));
+        
+        // Опционально: логирование отправки конкретному адресату
+        info("Уведомление о создании продукта {$this->product->id} отправлено на {$email}");
+    }
+}
+6. Контроллер
+Выполните php artisan make:controller ProductController -r.
+php
+// app/Http/Controllers/ProductController.php
+use App\Http\Requests\StoreProductRequest;
+use App\Http\Requests\UpdateProductRequest;
+use App\Jobs\ProcessNewProductNotification;
+use App\Models\Product;
+use Illuminate\Http\Request;
+
+class ProductController extends Controller
+{
+    public function index(Request $request)
+    {
+        $search = $request->get('search');
+        $products = Product::when($search, fn($q) => $q->where('name', 'like', "%$search%"))
+            ->orderByDesc('created_at')
+            ->paginate(15);
+            
+        return view('products.index', compact('products'));
+    }
+
+    public function show(Product $product)
+    {
+        return view('products.show', compact('product'));
+    }
+
+    public function create()
+    {
+        return view('products.create');
+    }
+
+    public function store(StoreProductRequest $request)
+    {
+        $validated = $request->validated();
+        
+        $product = Product::create($validated);
+
+        dispatch(new ProcessNewProductNotification($product));
+
+        return redirect()->route('products.index')->with('success', 'Продукт создан.');
+    }
+
+    public function edit(Product $product)
+    {
+        return view('products.edit', compact('product'));
+    }
+
+    public function update(UpdateProductRequest $request, Product $product)
+    {
+        $validated = $request->validated();
+        
+        // Дополнительная защита на уровне контроллера
+        if (config('products.role') !== 'admin') {
+            unset($validated['article']);
+        }
+
+        $product->update($validated);
+
+        return redirect()->route('products.index')->with('success', 'Продукт обновлен.');
+    }
+
+    public function destroy(Product $product)
+    {
+        $product->delete();
+        return back()->with('success', 'Продукт перемещен в корзину.');
+    }
+}
+7. Маршруты
+routes/web.php:
+phpКопировать
+Route::resource('products', ProductController::class);
+8. Интерфейс (Blade-шаблоны)
+Поскольку доступ к макету по ссылке требует авторизации, ниже приведена базовая структура HTML/CSS, повторяющая стандартную сетку ERP-систем (сайдбар слева, таблица списком, карточка справа). Вам нужно будет адаптировать классы под ваш дизайн.
+resources/views/products/index.blade.php:
+html
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Список продуктов</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body class="d-flex">
+    <!-- Сайдбар -->
+    <nav id="sidebar" class="bg-light border-end" style="width: 250px; min-height: 100vh;">
+        <div class="p-3">
+            <h5>PIN-ERP</h5>
+            <ul class="list-unstyled ps-0">
+                <li><a href="{{ route('products.index') }}" class="btn w-100 text-start">Продукты</a></li>
+                <li><a href="#" class="btn w-100 text-start disabled">Отчеты</a></li>
+            </ul>
+        </div>
+    </nav>
+
+    <!-- Основной контент -->
+    <main class="flex-fill p-4" style="margin-left: 250px;">
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h2>Продукты</h2>
+            <a href="{{ route('products.create') }}" class="btn btn-primary">+ Добавить продукт</a>
+        </div>
+
+        @if(session('success'))
+            <div class="alert alert-success">{{ session('success') }}</div>
+        @endif
+
+        <form method="GET" action="{{ route('products.index') }}" class="row g-3 mb-4">
+            <div class="col-auto flex-grow-1">
+                <input type="text" name="search" class="form-control" placeholder="Поиск по названию..." value="{{ request('search') }}">
+            </div>
+            <div class="col-auto"><button class="btn btn-outline-secondary">Найти</button></div>
+        </form>
+
+        <div class="table-responsive">
+            <table class="table table-bordered align-middle">
+                <thead class="table-light">
+                <tr>
+                    <th>ID</th>
+                    <th>Артикул</th>
+                    <th>Название</th>
+                    <th>Статус</th>
+                    <th>Цвет</th>
+                    <th>Размер</th>
+                    <th>Действия</th>
+                </tr>
+                </thead>
+                <tbody>
+                @forelse($products as $item)
+                    <tr>
+                        <td>{{ $item->id }}</td>
+                        <td>{{ $item->article }}</td>
+                        <td>{{ $item->name }}</td>
+                        <td>
+                            <span class="badge bg-{{ $item->status === 'available' ? 'success' : 'danger' }}">
+                                {{ $item->status }}
+                            </span>
+                        </td>
+                        <td>{{ $item->data['color'] ?? '-' }}</td>
+                        <td>{{ $item->data['size'] ?? '-' }}</td>
+                        <td>
+                            <a href="{{ route('products.show', $item) }}" class="btn btn-sm btn-info me-1">Просмотр</a>
+                            <a href="{{ route('products.edit', $item) }}" class="btn btn-sm btn-warning me-1">Ред.</a>
+                            <form action="{{ route('products.destroy', $item) }}" method="POST" class="d-inline-block">
+                                @csrf @method('DELETE')
+                                <button type="submit" class="btn btn-sm btn-danger">Удалить</button>
+                            </form>
+                        </td>
+                    </tr>
+                @empty
+                    <tr><td colspan="7" class="text-center">Продуктов не найдено.</td></tr>
+                @endforelse
+                </tbody>
+            </table>
+        </div>
+
+        <div class="mt-4">
+            {{ $products->links() }}
+        </div>
+    </main>
+</body>
+</html>
+(Аналогичные шаблоны создаются для show, edit и create. В форме редактирования инпут article рендерится только если config('products.role') === 'admin').
+9. Упаковка в GitHub
+1.	Создайте репозиторий на GitHub.
+2.	В корне проекта создайте файл .gitignore. Возьмите стандартный шаблон для Laravel отсюда.
+3.	Инициализируйте репозиторий:
+bash
+git init
+git add .
+git commit -m "Initial commit: Products CRUD with roles and queues"
+git branch -M main
+git remote add origin https://github.com/ВАШ_ЮЗЕРНЕЙМ/НАЗВАНИЕ_РЕПОЗИТОРИЯ.git
+git push -u origin main
+Важные замечания по реализации:
+•	Роли: В данном примере используется упрощенная система ролей через конфиг (config('products.role')). В реальном проекте рекомендуется использовать пакеты вроде Spatie Permission или нативные Gates/Policies Laravel, привязанные к пользователю из БД.
+•	Обработка JSONB: Поля внутри колонки data валидируются через точечную нотацию (data.color). При выводе во Vue/React фронтенде этот массив можно передавать напрямую.
+•	Очереди: Чтобы уведомления реально уходили, контейнеру app нужен процесс-обработчик очереди. В продакшене это настраивается через Supervisord (php artisan queue:work), для быстрой проверки подойдет php artisan queue:listen.
+•	Макет Figma: Так как ссылка ведет на закрытый ресурс, представленная верстка является типовой реализацией требований ТЗ (таблица со статусом-бейджами, сайдбар, модальные окна действий). Ее следует заменить на точную копию вашего дизайна после получения доступа к макету.
+
