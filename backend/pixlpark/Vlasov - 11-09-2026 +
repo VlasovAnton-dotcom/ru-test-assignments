@@ -1,0 +1,303 @@
+Вариант решения задачи - Vlasov - 11-09-2026
+Ниже представлена архитектура и базовая реализация тестового задания. Решение построено на современном стеке, указанном в требованиях (ASP.NET Core 7, React), с приоритетом на очереди сообщений RabbitMQ.
+
+Архитектура решения
+Frontend (React): 
+Компонент EmailRegistrationForm. Состоит из двух шагов: ввод email -> ожидание кода -> ввод кода.
+Для защиты от дудоса используется локальный таймер (setTimeout) блокировки кнопки «Отправить код» на 60 секунд после нажатия.
+Взаимодействие с бэкендом через REST API.
+Backend (ASP.NET Core 7 WebAPI):
+Контроллер AuthController с эндпоинтами /register/start, /register/verify.
+Сервис IEmailCodeService: генерирует код, сохраняет его состояние (например, в Redis для быстрого доступа или PostgreSQL) со сроком жизни (TTL) 5 минут.
+Издатель RabbitMqPublisher: сериализует задачу отправки письма и кладет ее в очередь email_queue.
+Worker (.NET Console App):
+Подписчик RabbitMqConsumer. При старте подключается к очереди email_queue.
+Получив сообщение, выводит данные в консоль в требуемом формате.
+Локализация: Ресурсы строк вынесены в .resx файлы. Frontend получает локализованные сообщения от сервера или использует свои словари i18next.
+Backend (ASP.NET Core 7)
+
+Для работы потребуются пакеты NuGet: MassTransit.RabbitMQ, Microsoft.AspNetCore.Mvc.NewtonsoftJson, StackExchange.Redis (или просто Dapper + Npgsql/System.Data.SqlClient).
+
+appsettings.json
+
+json
+Копировать
+{
+  "RabbitMq": {
+    "Host": "localhost",
+    "QueueName": "email_queue"
+  },
+  "JwtSettings": { /* если потребуется позже */ }
+}
+
+Модели запросов/ответов
+
+csharp
+Копировать
+public class RegisterStartRequest
+{
+    [Required]
+    [EmailAddress]
+    public string Email { get; set; }
+}
+
+public class RegisterVerifyRequest
+{
+    [Required]
+    [EmailAddress]
+    public string Email { get; set; }
+    
+    [Required]
+    public string Code { get; set; }
+}
+
+// Сообщение для очереди
+public record SendEmailCommand(string ToEmail, string Code);
+
+Интерфейс сервиса генерации кодов
+
+csharp
+Копировать
+public interface IEmailCodeService
+{
+    Task<string> GenerateAndStoreAsync(string email);
+    Task<bool> VerifyAsync(string email, string code);
+}
+
+Реализация: Код — случайная строка из 6 цифр (Random.Shared.Next(100000, 999999)). Хранить лучше всего в Redis с ключом reg_code:{email} и TTL 300 секунд. Если Redis недоступен, использовать таблицу в PostgreSQL/SQL Server с колонками (Email NVARCHAR(256) PK, Code NVARCHAR(10), ExpiresAt DATETIME2).
+
+Контроллер AuthController.cs
+
+csharp
+Копировать
+[ApiController]
+[Route("api/[controller]")]
+public class AuthController : ControllerBase
+{
+    private readonly IEmailCodeService _codeService;
+    private readonly IPublishEndpoint _publishEndpoint; // MassTransit
+
+    public AuthController(IEmailCodeService codeService, IPublishEndpoint publishEndpoint)
+    {
+        _codeService = codeService;
+        _publishEndpoint = publishEndpoint;
+    }
+
+    [HttpPost("register/start")]
+    [ProducesResponseType(StatusCodes.Status202Accepted)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> StartRegistration([FromBody] RegisterStartRequest request)
+    {
+        var code = await _codeService.GenerateAndStoreAsync(request.Email);
+        
+        // Отправляем задание в очередь
+        await _publishEndpoint.Publish(new SendEmailCommand(request.Email, code));
+        
+        return Accepted(new { Message = "Код отправлен" });
+    }
+
+    [HttpPost("register/verify")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> VerifyRegistration([FromBody] RegisterVerifyRequest request)
+    {
+        if (await _codeService.VerifyAsync(request.Email, request.Code))
+        {
+            // Здесь можно создать пользователя в БД, выдать токен и т.д.
+            return Ok(new { Success = true, Message = "Регистрация успешна" });
+        }
+        
+        return BadRequest(new { Success = false, Message = "Неверный код" });
+    }
+}
+
+Издатель RabbitMQ (через MassTransit)
+В Program.cs:
+
+csharp
+Копировать
+builder.Services.AddMassTransit(x =>
+{
+    x.UsingRabbitMq((context, cfg) =>
+    {
+        cfg.Host(builder.Configuration["RabbitMq:Host"], "/", h =>
+        {
+            h.Username("guest");
+            h.Password("guest");
+        });
+        // Автоконфигурация топиков/очередей по контрактам
+        cfg.ConfigureEndpoints(context);
+    });
+});
+Сервер отправки писем (Console App)
+
+Проект .NET 7 Console Application. Потребуется пакет MassTransit.RabbitMQ.
+
+Consumer.cs
+
+csharp
+Копировать
+public class SendEmailConsumer : IConsumer<SendEmailCommand>
+{
+    public Task Consume(ConsumeContext<SendEmailCommand> context)
+    {
+        var msg = context.Message;
+        // Вместо реальной отправки выводим в консоль согласно ТЗ
+        Console.WriteLine($"{DateTime.Now:yyyy.MM.dd HH:mm} {msg.ToEmail} код: {msg.Code}");
+        
+        // Логика реальной отправки закомментирована как заглушка
+        /*
+        using var client = new SmtpClient("smtp.server.com");
+        var mail = new MailMessage("noreply@yourapp.com", msg.ToEmail, "Ваш код подтверждения", $"Ваш код: {msg.Code}");
+        client.Send(mail);
+        */
+        
+        return Task.CompletedTask;
+    }
+}
+
+Program.cs
+
+csharp
+Копировать
+var host = Host.CreateDefaultBuilder(args)
+    .ConfigureServices((ctx, services) =>
+    {
+        services.AddMassTransit(x =>
+        {
+            x.AddConsumer<SendEmailConsumer>();
+            x.UsingRabbitMq((context, cfg) =>
+            {
+                cfg.Host(ctx.Configuration["RabbitMq:Host"], "/", h =>
+                {
+                    h.Username("guest");
+                    h.Password("guest");
+                });
+                cfg.ReceiveEndpoint(ctx.Configuration["RabbitMq:QueueName"], e => { e.ConfigureConsumer<SendEmailConsumer>(context); });
+            });
+        });
+    })
+    .Build();
+
+await host.RunAsync();
+Frontend (React)
+
+Компонент реализует логику двух шагов и блокировку интерфейса во время ожидания.
+
+EmailRegistrationForm.jsx
+
+javascript
+Копировать
+import React, { useState } from 'react';
+import { Input, Button, message } from 'antd';
+
+export default function EmailRegistrationForm() {
+  const [step, setStep] = useState('email'); // 'email' | 'code' | 'success'
+  const [email, setEmail] = useState('');
+  const [code, setCode] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [timer, setTimer] = useState(null);
+
+  const startRegistration = async () => {
+    if (!email) return message.error('Введите почту');
+    setLoading(true);
+    try {
+      const res = await fetch('/api/auth/register/start', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ email })
+      });
+      if (res.ok) {
+        setStep('code');
+        // Блокируем повторную отправку на 60 сек (защита от ДДОС на клиенте)
+        let secondsLeft = 60;
+        setTimer(secondsLeft);
+        const interval = setInterval(() => {
+          secondsLeft--;
+          setTimer(secondsLeft);
+          if (secondsLeft <= 0) clearInterval(interval);
+        }, 1000);
+      } else {
+        const data = await res.json();
+        message.error(data.message || 'Ошибка запроса');
+      }
+    } catch (e) {
+      message.error('Сетевая ошибка');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const verifyCode = async () => {
+    if (!code) return message.error('Введите код');
+    setLoading(true);
+    try {
+      const res = await fetch('/api/auth/register/verify', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ email, code })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setStep('success');
+      } else {
+        message.error(data.message || 'Неверный код');
+      }
+    } catch (e) {
+      message.error('Сетевая ошибка');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div style={{ maxWidth: 400, margin: '0 auto' }}>
+      {step === 'email' && (
+        <>
+          <Input placeholder="Электронная почта" value={email} onChange={e => setEmail(e.target.value)} />
+          <Button type="primary" loading={loading} disabled={!email || timer > 0} onClick={startRegistration}>
+            {timer > 0 ? `Повтор через ${timer}s` : 'Продолжить'}
+          </Button>
+        </>
+      )}
+      
+      {step === 'code' && (
+        <>
+          <p>На адрес {email} отправлен код.</p>
+          <Input placeholder="Введите код" value={code} onChange={e => setCode(e.target.value)} />
+          <Button type="primary" loading={loading} onClick={verifyCode}>Подтвердить</Button>
+        </>
+      )}
+
+      {step === 'success' && (
+        <div>
+          <h2>Успешно!</h2>
+          <p>Аккаунт зарегистрирован.</p>
+        </div>
+      )}
+    </div>
+  );
+}
+Локализуемость (I18n)
+Сервер: Используется встроенный механизм ASP.NET Core Localization. Строки ошибок и уведомлений оборачиваются в IStringLocalizer<T>. Фразы хранятся в ресурсах Resources/Controllers.AuthController.en.resx и ...ru.resx.
+Клиент: Рекомендуется библиотека i18next. Тексты кнопок («Продолжить», «Подтвердить») берутся из её словарей. Язык может переключаться либо вручную пользователем, либо автоматически на основе заголовка Accept-Language, который React передает в каждом запросе к API.
+Защита от дудоса и типичные ошибки реализации
+Уровень	Мера защиты
+Frontend	Таймер на кнопку отправки (60 секунд), отключение кнопки до ввода данных, индикация загрузки.
+Backend (Rate Limiting)	Middleware (например, AspNetCoreRateLimit), ограничивающий количество запросов к /register/start по IP-адресу (например, не более 5 раз в минуту).
+Backend (Validation)	Проверка синтаксиса email перед генерацией кода. Использование капчи (reCAPTCHA v3 невидимо для пользователя, но отсекает ботов) на первом шаге.
+Backend (Storage)	Использование TTL (Redis — 5 минут, SQL — фоновый Job-очиститель) для удаления просроченных кодов, чтобы таблица не росла бесконечно.
+Backend (Security)	Приведение email к нижнему регистру перед сохранением ключа, чтобы избежать дублирования User@Mail.com и user@mail.com.
+Backend (Race conditions)	Использование атомарных операций при записи в базу (UPSERT / INSERT ... ON CONFLICT UPDATE) или команд SETNX в Redis, чтобы параллельные запросы не перезаписали актуальный код новым.
+Разбор вопросов для собеседования на основе этого задания
+Алгоритмы и структуры данных:
+Как эффективно хранить коды подтверждения для миллионов пользователей? Ответ: In-memory хранилище с TTL (Redis). Хеш-таблица обеспечивает O(1) для вставки и проверки. Ключ — нормализованный email, значение — код. TTL решает проблему очистки мусора.
+Какой алгоритм генерации случайного кода безопасен? Ответ: Не Math.random() (детерминирован и предсказуем), а криптографически стойкий генератор (RandomNumberGenerator.GetInt32 в .NET или аналоги).
+Платформа .NET:
+Жизненный цикл сервисов в DI-контейнере ASP.NET Core. Почему IMessageProducer стоит регистрировать как Singleton, а обработчики RabbitMQ — как Transient?
+Чем отличается BackgroundService от использования IHostedService напрямую? Зачем нужен IApplicationLifetime или IHostApplicationLifetime для корректной остановки воркера при получении SIGTERM?
+Как работает middleware pipeline в Minimal APIs vs классический MVC?
+Протокол HTTP:
+Какие статусы ответа вы использовали и почему? 202 Accepted для старта (запрос принят, но обработка асинхронная — письмо еще не ушло физически), 200 OK для успеха, 400 Bad Request для неверного кода или формата.
+Что такое идемпотентность? Является ли метод POST /register/verify идемпотентным? Да, так как многократный вызов с одними и теми же данными вернет один и тот же результат (успех или неудача) без побочных эффектов изменения состояния на стороне сервера сверх первого раза.
+Роль заголовков Cache-Control, ETag (в данном задании не критично, но важно понимать теорию) и Retry-After (можно вернуть при превышении лимита запросов).
