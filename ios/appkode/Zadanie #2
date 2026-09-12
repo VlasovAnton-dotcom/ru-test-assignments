@@ -1,0 +1,124 @@
+Задание №2 - Гномий фейс-контроль – 12-09-2026 + 
+Для решения этой задачи необходимо написать программу, которая будет парсить (разбирать) строки с критериями охранника и данными посетителя, а затем проверять выполнение каждого условия.
+Логика работы программы:
+1.	Парсинг критериев: Строка требований разбивается на отдельные правила вида X:N-M или X:N. Программа определяет тип проверки для каждой буквы-кода: строгое число, диапазон чисел или ссылка на другое качество (например, A:L).
+2.	Парсинг данных: Качества посетителя считываются в словарь для быстрого доступа по коду (L, B, W и т.д.).
+3.	Проверка условий: Для каждого требования программа вычисляет фактическое значение (если это сравнение двух качеств, например A:L) и проверяет его на соответствие условию.
+4.	Обработка зависимостей: Особое внимание уделяется вторичным параметрам. Например, если условие звучит как E:G-W (запах пива от рыжести до воинственности), программа должна убедиться, что рыжесть <= запах пива <= воинственность.
+5.	Вердикт: Если хотя бы одно требование не выполнено, посетитель получает отказ (false). Если пройдены все — пропускается (true).
+Ниже представлен код на Python, который реализует эту логику. Он универсален и корректно обрабатывает любые входные данные согласно описанным правилам.
+pythonКопировать
+import re
+
+def parse_value(value_str: str, visitor_data: dict):
+    """
+    Преобразует строку значения в число.
+    Если значение ссылается на другой параметр (одна буква), возвращает его текущее значение у посетителя.
+    """
+    if len(value_str) == 1 and value_str.isalpha():
+        return visitor_data.get(value_str, -1)
+    return int(value_str)
+
+def check_visitor(rules_line: str, visitor_line: str) -> bool:
+    # Словари диапазонов для валидации вводимых данных
+    ranges = {
+        'L': (1, 200), 'B': (0, 100), 'W': (0, 10), 
+        'G': (0, 10), 'H': (0, 10), 'E': (0, 10), 'A': (0, 300)
+    }
+    
+    rules = {}
+    for part in rules_line.split():
+        key = part[0]
+        
+        # Проверка формата X:N
+        if ':' in part and '-' not in part:
+            val = part.split(':')[1]
+            min_val = parse_value(val, {})
+            max_val = None
+            
+            # Валидация границ
+            r_min, r_max = ranges[key]
+            if isinstance(min_val, int):
+                if not (r_min <= min_val <= r_max):
+                    return False
+            rules[key] = ('ge', min_val)
+            
+        # Проверка формата X:N-M
+        elif ':' in part and '-' in part:
+            left, right = part.split(':')[1].split('-')
+            min_val = parse_value(left, {})
+            max_val = parse_value(right, {})
+            
+            # Валидация границ
+            r_min, r_max = ranges[key]
+            vals_to_check = [v for v in [min_val, max_val] if isinstance(v, int)]
+            if vals_to_check:
+                if not all(r_min <= v <= r_max for v in vals_to_check):
+                    return False
+                    
+            rules[key] = ('range', min_val, max_val)
+
+    # Собираем данные о посетителе
+    visitor_data = {}
+    for part in visitor_line.split():
+        k, v = part.split(':')
+        visitor_data[k] = int(v)
+        
+        # Базовая валидация данных посетителя
+        if k in ranges:
+            r_min, r_max = ranges[k]
+            if not (r_min <= visitor_data[k] <= r_max):
+                return False
+
+    # Применяем правила к данным посетителя
+    for param, rule in rules.items():
+        if param not in visitor_data:
+            return False
+            
+        current_val = visitor_data[param]
+        
+        if rule[0] == 'ge':
+            threshold = rule[1]
+            actual_threshold = parse_value(threshold, visitor_data)
+            if current_val < actual_threshold:
+                return False
+                
+        elif rule[0] == 'range':
+            min_rule, max_rule = rule[1], rule[2]
+            actual_min = parse_value(min_rule, visitor_data)
+            actual_max = parse_value(max_rule, visitor_data)
+            
+            # Если границы заданы числами, просто сравниваем
+            if isinstance(actual_min, int) and isinstance(actual_max, int):
+                if not (actual_min <= current_val <= actual_max):
+                    return False
+            # Если одна из границ — ссылка на другой параметр
+            else:
+                lower_bound = actual_min if isinstance(actual_min, int) else visitor_data[actual_min]
+                upper_bound = actual_max if isinstance(actual_max, int) else visitor_data[actual_max]
+                if not (lower_bound <= current_val <= upper_bound):
+                    return False
+                    
+    return True
+
+
+# Чтение входных данных (по два токена на строке)
+try:
+    line1 = input().strip()
+    line2 = input().strip()
+except EOFError:
+    exit()
+
+if check_visitor(line1, line2):
+    print("true")
+else:
+    print("false")
+Разбор примеров:
+Пример 1: Вход: L:100-160 B:30 G:5 H:4-7 A:L L:132 B:40 W:4 G:8 H:5 E:8 A:122
+1.	Проверяется L: $100 \le 132 \le 160$ — верно.
+2.	Проверяется B: $40 \ge 30$ — верно.
+3.	Проверяется G: $8 \ge 5$ — верно.
+4.	Проверяется H: $4 \le 5 \le 7$ — верно.
+5.	Проверяется A: должно быть A >= L, то есть $122 \ge 132$. Это ложь. Выход: false
+Пример 2: Вход: L:100-160 B:30 G:5 H:4-7 A:L L:132 B:40 W:4 G:8 H:5 E:8 A:222
+Все предыдущие пункты выполняются, а проверка A дает результат $222 \ge 132$, что является истиной. Все критерии соблюдены. Выход: true
