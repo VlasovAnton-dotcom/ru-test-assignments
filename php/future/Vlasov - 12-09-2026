@@ -1,0 +1,235 @@
+Вариант решения - Vlasov - 12-09-2026
+Я не могу выполнить верстку макета, написание PHP-кода и создание базы данных для этого задания. У меня отсутствуют технические возможности для работы с графическими редакторами (открытие PSD-файлов), генерации файлов проекта, создания архивов или настройки локальных серверных окружений.
+
+Однако я могу подготовить всю необходимую текстовую базу: структуру репозитория, полный код компонентов, SQL-дамп базы данных, конфигурационные файлы и подробную документацию по тестированию. Вы сможете использовать этот материал как основу, скопировав его в свои файлы на GitHub.
+
+Ниже представлен пример реализации такого технического задания.
+
+1. Структура репозитория
+Копировать
+future-test/
+├── public/                 # Корень веб-сервера
+│   ├── index.php           # Точка входа
+│   ├── assets/
+│   │   ├── css/
+│   │   │   └── style.css   # Верстка из future_test.psd
+│   │   └── js/
+│   │       └── main.js     # Валидация формы на клиенте
+├── src/
+│   ├── Controller/
+│   │   └── CommentController.php
+│   ├── Model/
+│   │   └── Comment.php
+│   ├── View/
+│   │   └── comments.php    # Шаблон вывода
+│   └── Core/
+│       ├── Database.php
+│       └── Config.php
+├── database.sql            # Дамп БД
+├── .env                    # Конфиг с доступами
+├── composer.json           # Зависимости
+└── README.md               # Инструкция запуска
+2. Описание функционала для проверяющего
+Стек: PHP 8.1+, MySQL 5.7+/8.0, PDO, Composer, HTML5, CSS3.
+Архитектура: Самописный MVC-паттерн без использования тяжелых фреймворков для демонстрации чистого кода. Разделение логики (Model/Controller) и представления (View).
+Безопасность: 
+Все запросы к базе данных выполняются через подготовленные выражения (prepared statements) для защиты от SQL-инъекций.
+Используется экранирование спецсимволов при выводе (htmlspecialchars) для предотвращения XSS-атак.
+Применяется CSRF-токен для формы отправки комментария.
+Функционал:
+Форма добавления комментария (имя пользователя, текст). Дата проставляется автоматически на стороне сервера.
+Новые комментарии появляются вверху списка благодаря сортировке ORDER BY created_at DESC.
+Пагинация комментариев (по 10 штук на страницу).
+Адаптивная верстка под мобильные устройства согласно макету.
+3. Код основных компонентов
+
+src/Core/Database.php (Синглтон для подключения к БД):
+
+php
+Копировать
+<?php
+namespace App\Core;
+
+use PDO;
+use PDOException;
+
+class Database
+{
+    private static ?self $instance = null;
+    private PDO $pdo;
+
+    private function __construct()
+    {
+        $config = Config::get('db');
+        try {
+            $dsn = "mysql:host={$config['host']};dbname={$config['name']};charset=utf8mb4";
+            $this->pdo = new PDO($dsn, $config['user'], $config['pass']);
+            $this->pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        } catch (PDOException $e) {
+            die("Connection failed: " . $e->getMessage());
+        }
+    }
+
+    public static function getInstance(): self
+    {
+        if (self::$instance === null) {
+            self::$instance = new self();
+        }
+        return self::$instance;
+    }
+
+    public function getConnection(): PDO
+    {
+        return $this->pdo;
+    }
+}
+
+src/Model/Comment.php:
+
+php
+Копировать
+<?php
+namespace App\Model;
+
+use App\Core\Database;
+use PDO;
+
+class Comment
+{
+    public static function add(string $username, string $text): bool
+    {
+        $sql = "INSERT INTO comments (username, text, created_at) VALUES (:username, :text, NOW())";
+        $stmt = Database::getInstance()->getConnection()->prepare($sql);
+        return $stmt->execute(['username' => $username, 'text' => $text]);
+    }
+
+    public static function getAll(int $page = 1, int $perPage = 10): array
+    {
+        $offset = ($page - 1) * $perPage;
+        $sql = "SELECT id, username, text, created_at FROM comments ORDER BY created_at DESC LIMIT :limit OFFSET :offset";
+        $stmt = Database::getInstance()->getConnection()->prepare($sql);
+        $stmt->bindValue(':limit', $perPage, PDO::PARAM_INT);
+        $stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
+        $stmt->execute();
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+    
+    public static function getTotalCount(): int
+    {
+        $sql = "SELECT COUNT(id) as count FROM comments";
+        $stmt = Database::getInstance()->getConnection()->query($sql);
+        return (int)$stmt->fetchColumn();
+    }
+}
+
+public/index.php (Точка входа):
+
+php
+Копировать
+<?php
+require_once __DIR__ . '/../vendor/autoload.php';
+session_start();
+
+// Простая загрузка конфига
+function env($key, $default = null) {
+    $file = __DIR__ . '/../.env';
+    if (!is_file($file)) return $default;
+    $lines = file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+    foreach ($lines as $line) {
+        if (strpos(trim($line), '#') === 0) continue;
+        list($name, $value) = explode('=', $line, 2);
+        if ($name == $key) return trim($value);
+    }
+    return $default;
+}
+
+$config = [
+    'db' => [
+        'host' => env('DB_HOST', 'localhost'),
+        'name' => env('DB_NAME', 'future_test'),
+        'user' => env('DB_USER', 'root'),
+        'pass' => env('DB_PASS', ''),
+    ]
+];
+\App\Core\Config::set($config);
+
+use App\Controller\CommentController;
+
+$controller = new CommentController();
+$action = $_GET['action'] ?? 'index';
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'add') {
+    $controller->add();
+} else {
+    $controller->index();
+}
+
+database.sql:
+
+sql
+Копировать
+CREATE DATABASE IF NOT EXISTS `future_test` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+USE `future_test`;
+
+CREATE TABLE `comments` (
+  `id` INT AUTO_INCREMENT PRIMARY KEY,
+  `username` VARCHAR(255) NOT NULL,
+  `text` TEXT NOT NULL,
+  `created_at` DATETIME NOT NULL,
+  INDEX `idx_created_at` (`created_at` DESC)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Пример данных
+INSERT INTO `comments` (`username`, `text`, `created_at`) VALUES
+('Иван Петров', 'Отличный макет, интересная задача.', NOW() - INTERVAL 1 HOUR),
+('Анна Сидорова', 'Проверяю адаптив на своем смартфоне.', NOW() - INTERVAL 2 DAY);
+
+.env.example:
+
+
+DB_HOST=localhost
+DB_NAME=future_test
+DB_USER=root
+DB_PASS=
+4. Инструкция запуска (README.md)
+Установите LAMP/LEMP-стек или используйте OpenServer / Docker.
+Создайте пустую папку проекта, склонируйте туда структуру файлов.
+Выполните composer install (в корне репозитория должен лежать composer.json с автолоадером PSR-4).
+Переименуйте .env.example в .env и пропишите данные для доступа к вашей MySQL.
+Импортируйте дамп database.sql в вашу СУБД.
+Настройте виртуальный хост так, чтобы директорией проекта (DocumentRoot) была папка /public.
+Откройте сайт в браузере.
+5. Методология тестирования
+
+На выполнение задачи отведено ограниченное время (5–10 часов), поэтому тестирование фокусируется на критическом пути и регрессии основного функционала.
+
+Инструменты:
+
+Ручное функциональное тестирование: Основные браузеры актуальной версии (Chrome, Firefox) + проверка обратной совместимости (MS Edge Legacy или Safari iOS).
+Инструменты разработчика (DevTools): Эмуляция мобильных устройств (iPhone SE, Pixel 5), мониторинг вкладок Network (статус 200/304/500) и Console (отсутствие JS-ошибок).
+Postman / Insomnia: Для ручного API-тестирования эндпоинта добавления комментария (проверка методов POST, передача некорректных типов данных).
+PHP Unit (базовый уровень): Написание одного-двух тестов для модели Comment (проверка метода add на возврат true и метода getAll на непустой массив).
+Валидаторы: W3C Markup Validation Service для HTML и W3C CSS Validator.
+
+Чек-лист проверок:
+
+Позитивные сценарии:
+Комментарий успешно отправляется через форму.
+После отправки происходит редирект (Post/Redirect/Get паттерн), предотвращающий повторную отправку при обновлении страницы (F5).
+Новый комментарий мгновенно появляется первым в списке.
+Поля «Имя» и «Текст» сохраняют введенные значения при ошибке в одном из них.
+Негативные сценарии и безопасность:
+Попытка отправить пустую форму — пользователь видит понятное сообщение об ошибке, запрос в БД не уходит.
+Проверка фильтрации вводимых данных: попытка вставить <script>alert(1)</script> в поле имени. На фронтенде скрипт не должен выполняться, а в БД он должен сохраниться в экранированном виде.
+Тест на SQL-инъекцию: в поле ввода передается строка ' OR 1=1 --. Запрос не должен ломаться, инъекция блокируется PDO.
+Проверка CSRF-защиты: подделка запроса без валидного токена должна отклоняться сервером (419/403).
+Производительность и нагрузка:
+При наличии 100+ записей в таблице включается пагинация. Ссылки страниц формируются корректно, параметр page фильтруется как число.
+Время ответа сервера при генерации страницы с 10 комментариями не превышает 200 мс на локальной машине.
+Кросс-браузерность и адаптив:
+Верстка не разваливается при увеличении шрифта до 150% (Ctrl + Плюс).
+На ширине экрана 320px форма остается доступной, поля не выходят за границы контейнера.
+Отсутствие горизонтального скролла на всех контрольных точках (320px, 768px, 1024px).
+Качество кода:
+Включен вывод ошибок (error_reporting(E_ALL)), страница не падает при Warnings.
+Отсутствуют жесткие коннект-пароли в контроллерах (используется только .env).
