@@ -1,0 +1,390 @@
+Vlasov - 12-09-2026
+Технологический стек:
+React с функциональными компонентами.
+TypeScript — строго рекомендуется для типизации данных API и планировщика.
+Axios — для запросов к JSONPlaceholder.
+React Router v6 — для навигации между страницами.
+HTML5 Drag and Drop API — для перемещения объектов на доске.
+Часть 1: Админ панель
+1. Структура проекта
+
+В папке src создайте следующую структуру:
+
+Копировать
+/src
+|-- /api (обертки над запросами)
+|-- /components (переиспользуемые элементы: лоадер, кнопки)
+|-- /layouts (боковое меню)
+|-- /pages 
+    |-- /clients (UserList, UserEdit)
+|-- App.tsx
+|-- main.tsx
+2. Роутинг и боковое меню (App.tsx)
+
+Реализуйте сайдбар со ссылкой «Клиенты -> Список клиентов». Для имитации авторизации можно использовать простую проверку токена или оставить публичный доступ.
+
+typescript
+Копировать
+// src/App.tsx
+import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import SidebarLayout from './layouts/SidebarLayout';
+import UserList from './pages/clients/UserList';
+import UserEdit from './pages/clients/UserEdit';
+
+function App() {
+  return (
+    <Router>
+      <Routes>
+        {/* Основной лейаут админки */}
+        <Route element={<SidebarLayout />}>
+          <Route path="/" element={<Navigate to="/clients" replace />} />
+          <Route path="/clients" element={<UserList />} />
+          <Route path="/clients/:id/edit" element={<UserEdit />} />
+        </Route>
+      </Routes>
+    </Router>
+  );
+}
+
+export default App;
+
+Компонент боковой панели (SidebarLayout.tsx):
+
+typescript
+Копировать
+// src/layouts/SidebarLayout.tsx
+import { Outlet } from 'react-router-dom';
+
+const SidebarLayout = () => {
+  return (
+    <div style={{ display: 'flex' }}>
+      <aside style={{ width: 250, background: '#f4f7fa', padding: '20px 10px' }}>
+        <h3>Админ панель</h3>
+        <nav>
+          <ul style={{ listStyle: 'none', padding: 0 }}>
+            <li style={{ marginBottom: 10 }}><a href="/clients">Клиенты</a></li>
+            {/* Другие разделы из демо-примера */}
+          </ul>
+        </nav>
+      </aside>
+      <main style={{ flex: 1, padding: '20px' }}>
+        <Outlet />
+      </main>
+    </div>
+  );
+};
+
+export default SidebarLayout;
+3. Список пользователей (UserList.tsx) и лоадер
+
+Данные запрашиваются с https://jsonplaceholder.typicode.com/users. Поля пользователя: name, username, email, phone, website.
+
+typescript
+Копировать
+// src/components/Loader.tsx
+const Loader = () => (
+  <div style={{ textAlign: 'center', padding: '40px' }}>
+    <div className="spinner-border" role="status"></div>
+  </div>
+);
+export default Loader;
+
+// src/pages/clients/UserList.tsx
+import { useEffect, useState } from 'react';
+import axios from 'axios';
+import { Link } from 'react-router-dom';
+import Loader from '../../components/Loader';
+
+interface User {
+  id: number;
+  name: string;
+  username: string;
+  email: string;
+}
+
+const UserList = () => {
+  const [users, setUsers] = useState<User[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    axios.get('https://jsonplaceholder.typicode.com/users')
+      .then(res => {
+        setUsers(res.data);
+        setLoading(false);
+      })
+      .catch(() => setLoading(false));
+  }, []);
+
+  if (loading) return <Loader />;
+
+  return (
+    <div>
+      <h2>Список клиентов</h2>
+      <table border={1} cellPadding={10} style={{ width: '100%', borderCollapse: 'collapse' }}>
+        <thead>
+          <tr>
+            <th>Имя</th>
+            <th>Логин</th>
+            <th>Email</th>
+            <th>Действия</th>
+          </tr>
+        </thead>
+        <tbody>
+          {users.map(u => (
+            <tr key={u.id}>
+              <td>{u.name}</td>
+              <td>{u.username}</td>
+              <td>{u.email}</td>
+              <td><Link to={`/clients/${u.id}/edit`}>Редактировать</Link></td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+};
+
+export default UserList;
+4. Редактирование профиля (UserEdit.tsx)
+
+Страница имитирует сохранение. При нажатии на кнопку состояние блокируется, показывается спиннер на 1 секунду, затем происходит редирект назад.
+
+typescript
+Копировать
+// src/pages/clients/UserEdit.tsx
+import { useParams, useNavigate } from 'react-router-dom';
+import { useEffect, useState } from 'react';
+import axios from 'axios';
+import Loader from '../../components/Loader';
+
+const UserEdit = () => {
+  const { id } = useParams();
+  const navigate = useNavigate();
+  const [user, setUser] = useState<any>(null);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    // В реальном проекте здесь должен быть вызов api/user/{id}
+    // Используем заглушку из того же jsonplaceholder
+    axios.get(`https://jsonplaceholder.typicode.com/users/${id}`)
+      .then(res => setUser(res.data));
+  }, [id]);
+
+  const handleSave = async () => {
+    setSaving(true);
+    // Имитация запроса на сервер
+    await new Promise(resolve => setTimeout(resolve, 1000)); 
+    setSaving(false);
+    navigate('/clients');
+  };
+
+  if (!user) return <Loader />;
+
+  return (
+    <div>
+      <h2>Редактирование профиля: {user.name}</h2>
+      <form onSubmit={(e) => { e.preventDefault(); handleSave(); }}>
+        <div style={{ marginBottom: 15 }}>
+          <label>Имя:</label><br/>
+          <input type="text" value={user.name} disabled={saving} style={{ width: '100%' }} />
+        </div>
+        <div style={{ marginBottom: 15 }}>
+          <label>Username:</label><br/>
+          <input type="text" value={user.username} disabled={saving} style={{ width: '100%' }} />
+        </div>
+        <div style={{ marginBottom: 15 }}>
+          <label>Email:</label><br/>
+          <input type="email" value={user.email} disabled={saving} style={{ width: '100%' }} />
+        </div>
+        <button type="submit" disabled={saving}>
+          {saving ? 'Сохранение...' : 'Save Changes'}
+        </button>
+      </form>
+    </div>
+  );
+};
+
+export default UserEdit;
+5. Деплой (Heroku)
+
+Для деплоя фронтенда на Heroku используется билд-сервер Node.js:
+
+Добавьте скрипт "postinstall": "npm run build" в package.json.
+Создайте файл server.js:
+javascript
+Копировать
+const express = require('express');
+const path = require('path');
+const app = express();
+
+app.use(express.static(path.join(__dirname, 'dist')));
+
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, 'dist/index.html'));
+});
+
+const PORT = process.env.PORT || 8080;
+app.listen(PORT, () => console.log(`Server listening on ${PORT}`));
+Установите Express (npm i express), добавьте стартовый скрипт "start": "node server.js".
+Загрузите репозиторий на Heroku через Git.
+Часть 2: 2D Планировщик
+
+Рекомендуется сделать отдельной страницей /planner.
+
+1. Данные объектов
+typescript
+Копировать
+// src/data/furniture.ts
+export const furnitureCatalog = [
+  { id: 'chair-1', name: 'Кресло', url: '/img/chair.png', width: 100, height: 100 },
+  { id: 'table-1', name: 'Стол', url: '/img/table.png', width: 200, height: 100 },
+  { id: 'partition-1', name: 'Перегородка', url: '/img/wall.png', width: 300, height: 20 }
+];
+
+(Картинки нужно положить в папку public/img)
+
+2. Логика доски (Drag and Drop + Canvas-like контейнер)
+
+Используем абсолютное позиционирование внутри контейнера.
+
+typescript
+Копировать
+// src/pages/Planner.tsx
+import { useRef, useState } from 'react';
+import { furnitureCatalog } from '../data/furniture';
+
+interface PlacedItem {
+  catalogId: string;
+  x: number;
+  y: number;
+}
+
+const Planner = () => {
+  const boardRef = useRef<HTMLDivElement>(null);
+  const [items, setItems] = useState<PlacedItem[]>([]);
+  const [catalog] = useState(furnitureCatalog);
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+
+  // Берем объект из каталога при начале перетаскивания
+  const handleDragStart = (e: React.DragEvent, id: string) => {
+    setDraggingId(id);
+    e.dataTransfer.setData('text/plain', id); // Обязательно для Firefox
+    e.dataTransfer.effectAllowed = 'move';
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    if (!draggingId || !boardRef.current) return;
+    
+    const rect = boardRef.current.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+
+    setItems(prev => [...prev, { catalogId: draggingId, x, y }]);
+    setDraggingId(null);
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault(); // Обязательное условие для срабатывания drop
+  };
+
+  const findObjectById = (id: string) => catalog.find(obj => obj.id === id);
+
+  const saveLayout = () => {
+    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(items));
+    const downloadAnchorNode = document.createElement('a');
+    downloadAnchorNode.setAttribute("href", dataStr);
+    downloadAnchorNode.setAttribute("download", "layout.json");
+    document.body.appendChild(downloadAnchorNode);
+    downloadAnchorNode.click();
+    downloadAnchorNode.remove();
+  };
+
+  const loadLayout = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const parsed = JSON.parse(e.target?.result as string);
+        setItems(parsed);
+      } catch {}
+    };
+    reader.readAsText(file);
+  };
+
+  return (
+    <div>
+      <h2>2D Планировщик</hdiv>
+      
+      {/* Панель выбора объектов */}
+      <div style={{ marginBottom: 20 }}>
+        {catalog.map(obj => (
+          <div 
+            key={obj.id} 
+            draggable 
+            onDragStart={(e) => handleDragStart(e, obj.id)}
+            style={{ cursor: 'grab', display: 'inline-block', marginRight: 15 }}
+          >
+            <img src={obj.url} alt={obj.name} width={obj.width / 2} height={obj.height / 2} /><br/>
+            <small>{obj.name}</small>
+          </div>
+        ))}
+      </div>
+
+      {/* Кнопки сохранения/загрузки */}
+      <div style={{ marginBottom: 10 }}>
+        <button onClick={saveLayout}>Сохранить расстановку</button>
+        <input type="file" accept=".json" onChange={loadLayout} style={{ marginLeft: 10 }} />
+      </div>
+
+      {/* Доска */}
+      <div 
+        ref={boardRef}
+        onDrop={handleDrop}
+        onDragOver={handleDragOver}
+        style={{
+          position: 'relative',
+          width: '100%',
+          height: '500px',
+          border: '2px dashed #ccc'
+        }}
+      >
+        {items.map((item, index) => {
+          const obj = findObjectById(item.catalogId);
+          if (!obj) return null;
+          return (
+            <img
+              key={index}
+              src={obj.url}
+              alt=""
+              draggable // Позволяем двигать уже поставленные объекты
+              onDragStart={(e) => {
+                // Можно добавить логику перемещения существующих объектов
+                // Пока просто запрещаем перенос их обратно в каталог
+                e.dataTransfer.setData('text/plain', 'temp'); 
+              }}
+              style={{
+                position: 'absolute',
+                left: item.x,
+                top: item.y,
+                width: obj.width,
+                height: obj.height,
+                userSelect: 'none'
+              }}
+            />
+          );
+        })}
+      </div>
+    </div>
+  );
+};
+
+export default Planner;
+
+Примечание: Полноценная реализация перемещения уже добавленных объектов требует отслеживания координат мыши внутри самой картинки и изменения состояния x, y объекта в массиве items. Приведенный выше код реализует базовую постановку объектов на доску.
+
+Как интегрировать это в ваш проект:
+Скопируйте зависимости из нового package.json (убедитесь, что версии совпадают с вашим стартер-китом).
+Перенесите компоненты роутинга в вашу систему управления состоянием (если она есть в boilerplate).
+Если в вашем starter-kit используется Redux Toolkit или Zustand вместо локального useState, перенесите стейт-менеджмент туда. Лоадеры в таком случае лучше брать из библиотеки UI-компонентов вашего стартапа (например, Mantine, Ant Design или Chakra UI), если они там подключены.
