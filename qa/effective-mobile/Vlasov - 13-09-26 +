@@ -1,0 +1,182 @@
+Vlasov - 13-09-26 +
+Help GigaChat
+Ниже — два независимых проекта (можно положить в один репозиторий в разные папки).
+Каждый содержит всё необходимое: код, зависимости, пример переменных и пошаговую инструкцию.
+________________________________________
+1. E2E-тест покупки на saucedemo.com (Playwright + Python)
+Структура проекта
+saucedemo-test/
+├── tests/
+│   └── test_buy_sauce.py
+├── .env.example
+├── requirements.txt
+└── README.md
+requirements.txt
+pytest-playwright==0.5.0
+python-dotenv==1.0.1
+.env.example
+# Не коммитить настоящий .env
+SAUCEDEMO_URL=https://www.saucedemo.com
+SAUCE_USER=standard_user
+SAUCE_PASS=secret_sauce
+tests/test_buy_sauce.py
+python
+import os
+import pytest
+from playwright.sync_api import sync_playwright
+from dotenv import load_dotenv
+
+load_dotenv()
+
+URL = os.getenv("SAUCEDEMO_URL", "https://www.saucedemo.com")
+USER = os.getenv("SAUCE_USER", "standard_user")
+PASS = os.getenv("SAUCE_PASS", "secret_sauce")
+
+@pytest.fixture(scope="session")
+def browser():
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=False)  # headless=True для CI
+        yield browser
+        browser.close()
+
+def test_full_purchase(browser):
+    page = browser.new_page()
+    page.goto(URL)
+
+    # --- Авторизация ---
+    page.fill("#user-standard_user", USER)
+    page.fill("#password", PASS)
+    page.click("#login-button")
+    assert page.url == "https://www.saucedemo.com/inventory.html"
+
+    # --- Добавить рюкзак в корзину ---
+    page.click("button:has-text('Add to Cart')")
+    assert page.locator(".shopping_cart_badge").text_content() == "1"
+
+    # --- Перейти в корзину ---
+    page.click(".shopping_cart_link")
+    assert "Cart" in page.title()
+    assert page.locator("div.cart_item").count() == 1
+
+    # --- Оформить покупку ---
+    page.click("#checkout")
+    page.fill("#first-name", "Test")
+    page.fill("#last-name", "User")
+    page.fill("#postal-code", "12345")
+    page.click("#continue")
+
+    # --- Проверка завершения ---
+    assert "THANK YOU FOR YOUR ORDER" in page.locator(".complete-header").text_content()
+    page.click("#back-to-products")
+    assert page.url == "https://www.saucedemo.com/inventory.html"
+README.md (сокращённо)
+markdown
+# Saucedemo E2E Test
+
+## Установка
+```bash
+git clone <repo>
+cd saucedemo-test
+python -m venv venv
+source venv/bin/activate  # Windows: venv\Scripts\activate
+pip install -r requirements.txt
+playwright install
+Настройка
+bash
+cp .env.example .env
+# отредактируйте .env при необходимости
+Запуск
+bash
+pytest tests/test_buy_sauce.py -v
+Результат
+Тест проходит все шаги: логин → добавление рюкзака → оформление → проверка успешного завершения.
+
+---
+
+# 2. Тест GitHub API (requests + python-dotenv)
+
+## Структура проекта
+github-api-test/ ├── test_github_api.py ├── .env.example ├── requirements.txt └── README.md
+
+### `requirements.txt`
+requests==2.32.3 python-dotenv==1.0.1
+
+### `.env.example`
+Не коммитить!
+GITHUB_USERNAME=your_github_login GITHUB_TOKEN=ghp_... # токен с правами repo REPO_NAME=my-test-repo-unique
+
+### `test_github_api.py`
+```python
+import os
+import sys
+import requests
+from dotenv import load_dotenv
+
+load_dotenv()
+
+GITHUB_USER = os.getenv("GITHUB_USERNAME")
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+REPO_NAME = os.getenv("REPO_NAME")
+
+if not all([GITHUB_USER, GITHUB_TOKEN, REPO_NAME]):
+    sys.exit("Переменные GITHUB_USERNAME, GITHUB_TOKEN, REPO_NAME обязательны")
+
+BASE = "https://api.github.com"
+HEADERS = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github+json"}
+
+def create_repo():
+    url = f"{BASE}/user/repos"
+    data = {"name": REPO_NAME, "private": False}
+    r = requests.post(url, json=data, headers=HEADERS)
+    assert r.status_code == 201, f"Create failed: {r.text}"
+    print(f"✅ Репозиторий {REPO_NAME} создан")
+
+def list_repos():
+    url = f"{BASE}/user/repos?per_page=100"
+    r = requests.get(url, headers=HEADERS)
+    assert r.status_code == 200
+    repos = [repo["name"] for repo in r.json()]
+    assert REPO_NAME in repos, f"Репозиторий {REPO_NAME} не найден в списке"
+    print(f"✅ {REPO_NAME} присутствует в списке репозиториев")
+
+def delete_repo():
+    url = f"{BASE}/repos/{GITHUB_USER}/{REPO_NAME}"
+    r = requests.delete(url, headers=HEADERS)
+    assert r.status_code in (204, 200), f"Delete failed: {r.text}"
+    print(f"✅ Репозиторий {REPO_NAME} удалён")
+
+if __name__ == "__main__":
+    create_repo()
+    list_repos()
+    delete_repo()
+    print("Все проверки пройдены.")
+README.md
+markdown
+# GitHub API Test
+
+## Установка
+```bash
+cd github-api-test
+python -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+Настройка
+bash
+cp .env.example .env
+# Впишите свои GITHUB_USERNAME, GITHUB_TOKEN (с правами repo), REPO_NAME
+Запуск
+bash
+python test_github_api.py
+Что делает
+1.	Создаёт публичный репозиторий.
+2.	Проверяет, что он появился в списке.
+3.	Удаляет репозиторий.
+
+---
+
+## Как объединить в один репозиторий (опционально)
+automation-tests/ ├── saucedemo/ │ ├── tests/... │ └── ... ├── github-api/ │ ├── test_github_api.py │ └── ... └── README.md (ссылки на подпапки)
+
+Оба проекта **работают на любом компьютере** после выполнения инструкций.  
+Если нужен запуск в CI (GitHub Actions) — добавьте workflow, покажу отдельно.
+
