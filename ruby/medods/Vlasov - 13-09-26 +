@@ -1,0 +1,223 @@
+Ниже — два независимых проекта (можно положить в один репозиторий в разные папки). Каждый содержит всё необходимое: код, зависимости, пример переменных и пошаговую инструкцию.
+________________________________________
+1.	E2E-тест покупки на saucedemo.com (Playwright + Python) Структура проекта saucedemo-test/ ├── tests/ │ └── test_buy_sauce.py ├── .env.example ├── requirements.txt └── README.md requirements.txt pytest-playwright==0.5.0 python-dotenv==1.0.1 .env.example
+Не коммитить настоящий .env
+SAUCEDEMO_URL=https://www.saucedemo.com
+SAUCE_USER=standard_user SAUCE_PASS=secret_sauce tests/test_buy_sauce.py python import os import pytest from playwright.sync_api import sync_playwright from dotenv import load_dotenv
+load_dotenv()
+URL = os.getenv("SAUCEDEMO_URL", "https://www.saucedemo.com
+") USER = os.getenv("SAUCE_USER", "standard_user") PASS = os.getenv("SAUCE_PASS", "secret_sauce")
+@pytest.fixture(scope="session") def browser(): with sync_playwright() as p: browser = p.chromium.launch(headless=False) # headless=True для CI yield browser browser.close()
+def test_full_purchase(browser): page = browser.new_page() page.goto(URL)
+# --- Авторизация ---
+page.fill("#user-standard_user", USER)
+page.fill("#password", PASS)
+page.click("#login-button")
+assert page.url == "[https://www.saucedemo.com/inventory.html](https://www.saucedemo.com/inventory.html)"
+
+# --- Добавить рюкзак в корзину ---
+page.click("button:has-text('Add to Cart')")
+assert page.locator(".shopping_cart_badge").text_content() == "1"
+
+# --- Перейти в корзину ---
+page.click(".shopping_cart_link")
+assert "Cart" in page.title()
+assert page.locator("div.cart_item").count() == 1
+
+# --- Оформить покупку ---
+page.click("#checkout")
+page.fill("#first-name", "Test")
+page.fill("#last-name", "User")
+page.fill("#postal-code", "12345")
+page.click("#continue")
+
+# --- Проверка завершения ---
+assert "THANK YOU FOR YOUR ORDER" in page.locator(".complete-header").text_content()
+page.click("#back-to-products")
+assert page.url == "[https://www.saucedemo.com/inventory.html](https://www.saucedemo.com/inventory.html)"
+README.md (сокращённо) markdown
+Saucedemo E2E Test
+Установка
+bash
+git clone <repo>
+cd saucedemo-test
+python -m venv venv
+source venv/bin/activate  # Windows: venv\Scripts\activate
+pip install -r requirements.txt
+playwright install
+Настройка
+bash
+cp .env.example .env
+# отредактируйте .env при необходимости
+Запуск
+bash
+pytest tests/test_buy_sauce.py -v
+Результат
+Тест проходит все шаги: логин → добавление рюкзака → оформление → проверка успешного завершения.
+
+---
+
+# 2. Тест GitHub API (requests + python-dotenv)
+
+## Структура проекта
+github-api-test/ ├── test_github_api.py ├── .env.example ├── requirements.txt └── README.md
+
+### `requirements.txt`
+requests==2.32.3 python-dotenv==1.0.1
+
+### `.env.example`
+Не коммитить!
+GITHUB_USERNAME=your_github_login GITHUB_TOKEN=ghp_... # токен с правами repo REPO_NAME=my-test-repo-unique
+
+### `test_github_api.py`
+```python
+import os
+import sys
+import requests
+from dotenv import load_dotenv
+
+load_dotenv()
+
+GITHUB_USER = os.getenv("GITHUB_USERNAME")
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+REPO_NAME = os.getenv("REPO_NAME")
+
+if not all([GITHUB_USER, GITHUB_TOKEN, REPO_NAME]):
+    sys.exit("Переменные GITHUB_USERNAME, GITHUB_TOKEN, REPO_NAME обязательны")
+
+BASE = "[https://api.github.com](https://api.github.com)"
+HEADERS = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github+json"}
+
+def create_repo():
+    url = f"{BASE}/user/repos"
+    data = {"name": REPO_NAME, "private": False}
+    r = requests.post(url, json=data, headers=HEADERS)
+    assert r.status_code == 201, f"Create failed: {r.text}"
+    print(f"✅ Репозиторий {REPO_NAME} создан")
+
+def list_repos():
+    url = f"{BASE}/user/repos?per_page=100"
+    r = requests.get(url, headers=HEADERS)
+    assert r.status_code == 200
+    repos = [repo["name"] for repo in r.json()]
+    assert REPO_NAME in repos, f"Репозиторий {REPO_NAME} не найден в списке"
+    print(f"✅ {REPO_NAME} присутствует в списке репозиториев")
+
+def delete_repo():
+    url = f"{BASE}/repos/{GITHUB_USER}/{REPO_NAME}"
+    r = requests.delete(url, headers=HEADERS)
+    assert r.status_code in (204, 200), f"Delete failed: {r.text}"
+    print(f"✅ Репозиторий {REPO_NAME} удалён")
+
+if __name__ == "__main__":
+    create_repo()
+    list_repos()
+    delete_repo()
+    print("Все проверки пройдены.")
+README.md
+markdown
+# GitHub API Test
+
+## Установка
+```bash
+cd github-api-test
+python -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+Настройка
+bash
+cp .env.example .env
+# Впишите свои GITHUB_USERNAME, GITHUB_TOKEN (с правами repo), REPO_NAME
+Запуск
+bash
+python test_github_api.py
+Что делает
+1.	Создаёт публичный репозиторий.
+2.	Проверяет, что он появился в списке.
+3.	Удаляет репозиторий.
+
+---
+
+## Как объединить в один репозиторий (опционально)
+automation-tests/ ├── saucedemo/ │ ├── tests/... │ └── ... ├── github-api/ │ ├── test_github_api.py │ └── ... └── README.md (ссылки на подпапки)
+
+Оба проекта **работают на любом компьютере** после выполнения инструкций.  
+Если нужен запуск в CI (GitHub Actions) — добавьте workflow, покажу отдельно.
+Ответ
+Оба проекта — отличная база для автоматизации. Они уже разделены, документированы и не зависят от конкретной машины. Ниже — что можно улучшить по делу и как безболезненно объединить их в один репозиторий.
+1. Единая структура (опционально)
+
+automation-tests/
+├── .github/
+│   └── workflows/
+│       ├── saucedemo.yml
+│       └── github-api.yml
+├── saucedemo/
+│   ├── tests/
+│   │   └── test_buy_sauce.py
+│   ├── .env.example
+│   ├── requirements.txt
+│   └── README.md
+├── github-api/
+│   ├── test_github_api.py
+│   ├── .env.example
+│   ├── requirements.txt
+│   └── README.md
+├── .gitignore
+└── README.md   # с навигацией по подпапкам
+2. Что поправить в коде
+Saucedemo
+•	headless=False — для локальной отладки, в CI ставьте headless=True (уже отмечено).
+•	Добавьте неявные ожидания / expect из Playwright — тесты станут стабильнее.
+•	Вынесите селекторы в locators.py — сейчас они захардкожены.
+•	Фикстуру browser лучше делать session, но закрывать после всех тестов (у вас так, норм). Добавьте --headed для дебага через CLI.
+GitHub API
+•	Вместо sys.exit в рантайме — сделайте skip, если переменных нет, чтобы pytest не падал с непонятной ошибкой.
+•	Добавьте def teardown_module: удаляйте репозиторий даже при падении (через try/finally).
+•	Используйте GITHUB_TOKEN (новый формат) — в коде уже token, но лучше явно назвать GITHUB_PAT.
+•	Для повторных запусков — уникальное имя (можно через uuid или f"test-repo-{int(time.time())}"), иначе конфликт при повторе.
+3. CI/CD (GitHub Actions)
+saucedemo/.github/workflows/saucedemo.yml:
+yaml
+name: Saucedemo E2E
+on: [push, pull_request]
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.11' }
+      - run: pip install -r saucedemo/requirements.txt
+      - run: playwright install --with-deps
+      - run: pytest saucedemo/tests/ -v
+        env:
+          SAUCEDEMO_URL: ${{ secrets.SAUCEDEMO_URL }}
+          SAUCE_USER: ${{ secrets.SAUCE_USER }}
+          SAUCE_PASS: ${{ secrets.SAUCE_PASS }}
+github-api/.github/workflows/api.yml — аналогично, переменные через secrets.
+4. Безопасность и .gitignore
+# .gitignore
+.env
+.venv/
+__pycache__/
+.pytest_cache/
+.venv/
+node_modules/
+*.egg-info/
+5. Запуск в Docker (один Makefile для обоих)
+makefile
+.PHONY: test-sauce test-api
+
+test-sauce:
+	docker run --rm -v $(PWD)/saucedemo:/work -w /work python:3.11-slim bash -c \
+		"pip install -r requirements.txt && playwright install --with-deps && pytest tests/"
+
+test-api:
+	docker run --rm -v $(PWD)/github-api:/work -w /work python:3.11-slim bash -c \
+		"pip install -r requirements.txt && python test_github_api.py"
+6. Мелкие, но важные
+•	В README обоих проектов добавьте пример вывода успешного запуска — новым разработчикам проще.
+•	В GitHub API тесте можно добавить --skip-delete переменную, чтобы случайно не грохнуть репозиторий на проде.
+•	Если объединяете в монорепо — добавьте Makefile / package.json скрипты в корень, чтобы не запоминать пути.
+
