@@ -1,0 +1,332 @@
+Vlasov - 13-09-26 Help Giga Chat
+Задание 1. Список новостей (MODx, PHP) При работе с большинством проектов на MODx мы используем шаблонизатор Fenom, входящий в комплект пакета pdoTools. По этой причине, при выполнении заданий рекомендуется применять его синтаксис и возможности, когда это обосновано.
+Имеется простой сайт на MODx с двумя шаблонами: Список новостей (3) и Новость (4) .
+В дереве ресурсов есть ресурс Новости (54) с дочерними ресурсами:
+-- Новости (54) ---- Новость1 (55) ---- Новость2 (56) ---- Новость3 (57) ---- Новость4 (58) ---- ............. ---- Новость99 (104) У каждой новости есть следующие поля - заголовок pagetitle, дата публикации publishedon, ссылка на изображение-превью в ТВ-поле preview_image и длинный текст в поле content.
+Нужно вывести список новостей на страницу Новости (54) в соответствии с следующей вёрсткой:
+<div class="page"> ... ...
+
+<div class="news">
+	<div class="news-item">
+		<img class="news-item-preview" src="(url изображения)">
+		<div class="news-item-title">(заголовок)</div>
+		<div class="news-item-text">(обрезанный до 200 символов текст)</div>
+		<div class="news-item-pubdate">(дата публикации в читаемом формате)</div>
+	</div>
+	...
+	...
+	...
+	<div class="news-item">
+		<img class="news-item-preview" src="(url изображения)">
+		<div class="news-item-title">(заголовок)</div>
+		<div class="news-item-text">(обрезанный до 200 символов текст)</div>
+		<div class="news-item-pubdate">(дата публикации в читаемом формате)</div>
+	</div>
+</div>
+
+...
+...
+</div> Решение содержит как минимум один сниппет getNews.php, но может состоять и из нескольких файлов.
+Задание 2. Генерация мобильного меню (HTML, CSS, JS) Необходимо создать на сайте мобильное меню, работающее следующим образом:
+Показать анимацию На сервере существует адрес (к примеру, /api/getMenu), при обращении на который отдаётся структура мобильного меню в формате JSON следующего вида: [ { "title": "Заголовок пункта меню", "url": "https://test.site/item1
+" }, { "title": "Заголовок пункта меню1", "url": "https://test.site/item2
+", "children": [{ "title": "Заголовок пункта меню2", "url": "https://test.site/item3
+" }, { "title": "Заголовок пункта меню3", "url": "https://test.site/item3
+", "children": [{ "title": "Заголовок пункта меню4", "url": "https://test.site/item4
+" }, { "title": "Заголовок пункта меню6", "url": "https://test.site/item6
+" } ] } ] }, { "title": "Заголовок пункта меню5", "url": "https://test.site/item5
+" } ] Каждый пункт меню может содержать дочерние ресурсы, вложенность неограниченна. Наличие или отсутствие детей определяется полем children в каждом объекте.
+Необходимо сверстать меню и написать файл menu.js, который при загрузке страницы запрашивает мобильное меню с сервера и строит его.
+Пункты меню кликабельны (это ссылки), но те, у которых есть дети, должны также раскрываться по какому-нибудь принципу (в примере выше - стрелки рядом с пункатами).
+Внешний вид может быть любым, но обязательно наличие хотя бы какой-нибудь анимации при переходе между экранами.
+Ответ
+Задание 1. Список новостей (MODx + pdoTools + Fenom)
+Логика решения
+•	Создаём сниппет getNews.php, который через pdoTools получает опубликованные дочерние ресурсы новости.
+•	Обрезаем content до 200 символов (чистый текст), форматируем дату.
+•	Возвращает JSON массив (можно использовать плейсхолдер).
+•	В шаблоне «Список новостей» (Fenom) вызываем сниппет, разбираем JSON и в цикле выводим карточки.
+1. Сниппет getNews.php
+php
+<?php
+/**
+ * getNews.php – возвращает список новостей для текущего контейнера
+ * Параметры (через [[!getNews? &parent=`54`]]):
+ *   &parent  – ID родителя (по умолчанию 54)
+ *   &limit   – лимит (0 = без ограничения)
+ *   &sortby  – поле сортировки (publishedon)
+ *   &sortdir – направление (DESC)
+ */
+
+if (!$modx->loadClass('pdopage', MODX_CORE_PATH . 'components/pdotools/model/pdotools/', false, true)) {
+    $modx->log(modX::LOG_LEVEL_ERROR, 'pdoTools not found');
+    return;
+}
+
+$pdo = $modx->getService('pdoTools');
+
+$parent = (int) $modx->getOption('parent', $scriptProperties, 54);
+$limit  = (int) $modx->getOption('limit', $scriptProperties, 0);
+$sortby = $modx->getOption('sortby', $scriptProperties, 'publishedon');
+$sortdir = $modx->getOption('sortdir', $scriptProperties, 'DESC');
+
+$where = [
+    'parent'   => $parent,
+    'deleted'  => 0,
+    'published'=> 1,
+];
+
+$options = [
+    'loadModels' => 'modResource',
+    'select'     => 'id,pagetitle,publishedon,preview_image,content',
+    'where'      => json_encode($where, JSON_NUMERIC_CHECK),
+    'sortby'     => $sortby,
+    'sortdir'    => $sortdir,
+    'limit'      => $limit ?: 0,
+];
+
+$collection = $pdo->getCollection('modResource', $options);
+
+// Обработка каждой новости
+foreach ($collection as &$item) {
+    // Чистый текст, обрезанный до 200 символов
+    $text = strip_tags($item['content']);
+    $text = $modx->stripTags($text); // удаляем возможные оставшиеся теги
+    if (mb_strlen($text) > 200) {
+        $text = mb_substr($text, 0, 200) . '…';
+    }
+    $item['content_short'] = $text;
+
+    // Дата в читаемом формате (можно настроить)
+    $item['pubdate'] = strftime('%d %B %Y', (int) $item['publishedon']);
+}
+unset($item);
+
+// Возвращаем как JSON – для безопасной передачи в Fenom
+return json_encode($collection, JSON_UNESCAPED_UNICODE | JSON_NUMERIC_CHECK);
+2. Шаблон «Список новостей» (Fenom)
+fenom
+{extends 'file:templates/base.tpl'}
+
+{block 'content'}
+<div class="page">
+    <h1>Новости</h1>
+
+    <div class="news">
+        {*
+            Вызываем сниппет и результат парсим из JSON.
+            Можно также использовать плейсхолдер:
+            в getNews.php → $modx->setPlaceholder('news', json_encode(...))
+            и здесь: {set $items = $_pls['news'] | fromJSON}
+        *}
+        {set $items = '[[!getNews]]' | parse : []}
+
+        {foreach $items as $item}
+        <div class="news-item">
+            <img class="news-item-preview"
+                 src="{$item.preview_image|default:'assets/img/no-preview.jpg'}"
+                 alt="{$item.pagetitle|escape}">
+            <div class="news-item-title">{$item.pagetitle|escape}</div>
+            <div class="news-item-text">{$item.content_short}</div>
+            <div class="news-item-pubdate">{$item.pubdate}</div>
+        </div>
+        {foreachelse}
+        <p>Новостей пока нет.</p>
+        {/foreach}
+    </div>
+</div>
+{/block}
+3. Альтернативный вариант (без парсинга JSON)
+Если хочется работать напрямую с массивом – сниппет может установить плейсхолдер:
+phpКопировать
+$modx->setPlaceholder('news', json_encode($collection));
+А в шаблоне:
+fenomКопировать
+{set $items = $_pls['news'] | fromJSON}
+Так даже безопаснее, потому что не нужно вызывать parse.
+4. Примечания
+•	Fenom модификаторы :cut:200 и :date могут заменить часть PHP логики, но только если контент гарантированно без HTML.
+•	Для пагинации pdoTools автоматически подхватит &page и &limit, если нужно.
+•	TV поле preview_image должно быть заполнено – можно добавить проверку на пустоту.
+________________________________________
+Задание 2. Мобильное меню (HTML / CSS / JS)
+Требования
+•	Меню загружается с /api/getMenu (JSON с неограниченной вложенностью).
+•	Пункты с детьми имеют стрелку и раскрываются/скрываются с анимацией.
+•	Анимация при открытии/закрытии (плавный выезд / раскрытие).
+•	Пункты без детей – обычные ссылки, с детьми – блокируют переход.
+1. HTML (кнопка + контейнер)
+html
+<!-- Кнопка бургера -->
+<button id="menuToggle" aria-label="Открыть меню">☰</button>
+
+<!-- Оверлей -->
+<div id="menuOverlay" class="menu-overlay hidden"></div>
+
+<!-- Само меню -->
+<nav id="mobileMenu" class="menu hidden" aria-label="Мобильное меню">
+  <div class="menu-header">
+    <span>Меню</span>
+    <button id="menuClose" aria-label="Закрыть">✕</button>
+  </div>
+  <ul id="menuRoot"></ul>
+</nav>
+2. CSS (стили + анимации)
+css
+/* Оверлей */
+.menu-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.5);
+  z-index: 999; opacity: 0; transition: opacity 0.3s ease;
+}
+.menu-overlay.hidden { opacity: 0; pointer-events: none; }
+
+/* Само меню (выезд справа) */
+.menu {
+  position: fixed; top: 0; right: -320px; width: 320px; height: 100%;
+  background: #fff; box-shadow: -4px 0 12px rgba(0,0,0,0.15);
+  z-index: 1000; display: flex; flex-direction: column;
+  transition: right 0.35s cubic-bezier(0.2,0.9,0.4,1);
+  overflow: hidden;
+}
+.menu.hidden { right: -320px; }
+.menu.open { right: 0; }
+
+/* Прокрутка внутри меню */
+.menu-body { flex: 1; overflow-y: auto; padding: 1rem; }
+
+/* Базовые стили пунктов */
+.menu-item { list-style: none; }
+.menu-link {
+  display: flex; align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 1rem; border-bottom: 1px solid #eee;
+  text-decoration: none; color: #333; font-size: 1rem;
+  transition: background 0.2s;
+}
+.menu-link:hover { background: #f5f5f5; }
+
+/* Стрелка */
+.menu-arrow {
+  display: inline-block; transition: transform 0.3s;
+  width: 1em; text-align: center; font-size: 0.8em;
+}
+.menu-expanded > .menu-arrow { transform: rotate(90deg); }
+
+/* Подменю (рекурсивное) */
+.submenu {
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height 0.4s ease;
+  background: #fafafa;
+}
+.submenu.open {
+  max-height: 2000px; /* достаточно большое */
+}
+3. JavaScript – menu.js
+javascript
+document.addEventListener('DOMContentLoaded', () => {
+  const toggle = document.getElementById('menuToggle');
+  const closeBtn = document.getElementById('menuClose');
+  const overlay = document.getElementById('menuOverlay');
+  const menu = document.getElementById('mobileMenu');
+  const root = document.getElementById('menuRoot');
+
+  // Открыть / закрыть меню
+  function openMenu() {
+    menu.classList.add('open');
+    overlay.classList.remove('hidden');
+    document.body.style.overflow = 'hidden';
+  }
+  function closeMenu() {
+    menu.classList.remove('open');
+    overlay.classList.add('hidden');
+    document.body.style.overflow = '';
+  }
+
+  toggle.addEventListener('click', openMenu);
+  closeBtn.addEventListener('click', closeMenu);
+  overlay.addEventListener('click', closeMenu);
+
+  // Escape закрывает меню
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !menu.classList.contains('hidden')) closeMenu();
+  });
+
+  // ----------------- Построение меню -----------------
+  async function loadMenu() {
+    try {
+      const response = await fetch('/api/getMenu');
+      if (!response.ok) throw new Error('Ошибка загрузки');
+      const data = await response.json();
+      renderMenu(data, root);
+    } catch (err) {
+      console.error(err);
+      root.innerHTML = '<li class="menu-item"><span class="menu-link">Не удалось загрузить меню</span></li>';
+    }
+  }
+
+  // Рекурсивная отрисовка
+  function renderMenu(items, parentElement) {
+    items.forEach(item => {
+      const li = document.createElement('li');
+      li.className = 'menu-item';
+
+      const link = document.createElement('a');
+      link.className = 'menu-link';
+      link.href = item.url;
+      link.innerHTML = `<span>${escapeHtml(item.title)}</span><span class="menu-arrow">${item.children ? '▶' : ''}</span>`;
+
+      // Если есть дети – блокируем переход и добавляем обработчик
+      if (item.children && item.children.length) {
+        link.addEventListener('click', (e) => {
+          e.preventDefault();
+          const submenu = link.nextElementSibling; // <ul class="submenu">
+          if (submenu) {
+            const isOpen = submenu.classList.contains('open');
+            // Закрываем все открытые подменю на этом уровне (опционально)
+            const parent = li.parentElement;
+            parent.querySelectorAll('.submenu.open').forEach(s => s.classList.remove('open'));
+            // Раскрываем текущее
+            if (!isOpen) submenu.classList.add('open');
+          }
+        });
+
+        // Создаём вложенный список
+        const subUl = document.createElement('ul');
+        subUl.className = 'submenu';
+        renderMenu(item.children, subUl);
+        li.appendChild(link);
+        li.appendChild(subUl);
+      } else {
+        // Обычная ссылка – оставляем переход
+        link.addEventListener('click', () => closeMenu());
+        li.appendChild(link);
+      }
+
+      parentElement.appendChild(li);
+    });
+  }
+
+  // Простейшая защита от XSS
+  function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+  }
+
+  // Инициализация
+  loadMenu();
+});
+4. Как это работает
+1.	При загрузке страницы menu.js делает fetch('/api/getMenu').
+2.	Получает JSON и рекурсивно строит дерево <ul> / <li>.
+3.	Если у пункта есть children – добавляется стрелка, клик отменяет переход и переключает класс open у вложенного <ul>.
+4.	CSS анимация max-height 0.4s создаёт плавное раскрытие подменю.
+5.	Главное меню выезжает/прячется через right + оверлей.
+6.	При клике на ссылку без детей меню закрывается (и происходит переход).
+5. Улучшения (опционально)
+•	Анимация фона – менять прозрачность оверлея.
+•	Жесты свайпа – добавить touch события.
+•	Сохранение состояния (localStorage) – какое подменю открыто.
+•	Адаптив – медиа запрос для десктопа (превратить в горизонтальное).
+
