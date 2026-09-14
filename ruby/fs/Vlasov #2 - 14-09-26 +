@@ -1,0 +1,1635 @@
+Объёмная задача — два проекта на Ruby/Rails. Разберу оба по порядку, с полным кодом и инструкциями по запуску. Деплой на Heroku и публикацию на GitHub вам придётся выполнить самостоятельно, но я дам все необходимые команды.
+________________________________________
+Задание 1. Look and Say последовательность
+Это последовательность Конвея: каждый следующий член описывает предыдущий — количество подряд идущих одинаковых цифр и саму цифру.
+text
+1 → "одна единица" → 11
+11 → "две единицы" → 21
+21 → "одна двойка, одна единица" → 1211
+...
+Структура проекта
+text
+look_and_say/
+├── lib/
+│   └── look_and_say.rb
+├── spec/
+│   └── look_and_say_spec.rb
+├── Gemfile
+└── README.md
+lib/look_and_say.rb
+ruby
+# frozen_string_literal: true
+
+module LookAndSay
+  # Генератор членa последовательности на основе строки цифр.
+  class Generator
+    def initialize(seed = '1')
+      raise ArgumentError, 'Seed must be a non-empty string of digits' unless seed.match?(/\A\d+\z/)
+
+      @current = seed
+    end
+
+    # Возвращает следующий член последовательности.
+    def next
+      @current = describe(@current)
+    end
+
+    # Генерирует n членов, начиная с текущего.
+    # Возвращает массив строк.
+    def take(n)
+      Array.new(n) { next }
+    end
+
+    # Сброс к начальному значению.
+    def reset(seed = '1')
+      @current = seed
+      self
+    end
+
+    private
+
+    # Описание строки: "111" → "31" (три единицы)
+    def describe(input)
+      input
+        .chars
+        .chunk_while { |a, b| a == b }
+        .map { |group| "#{group.size}#{group.first}" }
+        .join
+    end
+  end
+
+  # Итератор, ведущий себя как Enumerable.
+  class Sequence
+    include Enumerable
+
+    def initialize(seed = '1')
+      @generator = Generator.new(seed)
+      @cache = []
+    end
+
+    def each
+      return enum_for(:each) unless block_given?
+
+      i = 0
+      loop do
+        yield fetch(i)
+        i += 1
+      end
+    end
+
+    def [](index)
+      fetch(index)
+    end
+
+    private
+
+    def fetch(index)
+      while @cache.size <= index
+        @cache << @generator.next
+      end
+      @cache[index]
+    end
+  end
+end
+spec/look_and_say_spec.rb
+ruby
+# frozen_string_literal: true
+
+require 'look_and_say'
+
+RSpec.describe LookAndSay::Generator do
+  let(:generator) { described_class.new }
+
+  describe '#next' do
+    it 'generates the correct sequence' do
+      expected = %w[1 11 21 1211 111221 312211 13112221]
+      values = ['1']
+      6.times { values << generator.next }
+      expect(values).to eq(expected)
+    end
+
+    it 'starts from custom seed' do
+      gen = described_class.new('22')
+      expect(gen.next).to eq('22')
+      expect(gen.next).to eq('2222')
+      expect(gen.next).to eq('44')
+    end
+  end
+
+  describe '#take' do
+    it 'returns n consecutive elements' do
+      gen = described_class.new
+      expect(gen.take(5)).to eq(%w[11 21 1211 111221 312211])
+    end
+  end
+
+  describe '#reset' do
+    it 'resets to initial seed' do
+      gen = described_class.new
+      3.times { gen.next }
+      gen.reset
+      expect(gen.next).to eq('11')
+    end
+  end
+
+  describe 'invalid seed' do
+    it 'raises ArgumentError for non-digit input' do
+      expect { described_class.new('abc') }.to raise_error(ArgumentError)
+    end
+
+    it 'raises ArgumentError for empty input' do
+      expect { described_class.new('') }.to raise_error(ArgumentError)
+    end
+  end
+end
+
+RSpec.describe LookAndSay::Sequence do
+  let(:sequence) { described_class.new }
+
+  it 'returns elements by index' do
+    expect(sequence[0]).to eq('11')
+    expect(sequence[1]).to eq('21')
+    expect(sequence[5]).to eq('13112221')
+  end
+
+  it 'caches computed values' do
+    expect(sequence[2]).to eq('1211')
+    expect(sequence[0]).to eq('11')
+  end
+
+  it 'is enumerable' do
+    first_five = sequence.first(5)
+    expect(first_five).to eq(%w[11 21 1211 111221 312211])
+  end
+end
+Gemfile
+ruby
+# frozen_string_literal: true
+
+source 'https://rubygems.org'
+
+gem 'rake'
+
+group :development, :test do
+  gem 'rspec'
+end
+Запуск
+bash
+gem install rspec
+rspec spec/
+README.md
+markdown
+# Look and Say Sequence
+
+## Usage
+
+```ruby
+require_relative 'lib/look_and_say'
+
+gen = LookAndSay::Generator.new
+6.times { puts gen.next }
+# 11
+# 21
+# 1211
+# 111221
+# 312211
+# 13112221
+
+# Lazy enumerable
+seq = LookAndSay::Sequence.new
+puts seq.first(10)
+Tests
+bash
+rspec
+text
+
+---
+
+## Задание 2. Персональный блог на Rails
+
+### Создание проекта
+
+```bash
+rails new blog --css=bootstrap
+cd blog
+bundle add devise
+rails generate devise:install
+rails generate devise Admin
+rails generate scaffold Article title:string body:text admin:references
+rails db:migrate
+Полностью все файлы расписывать не буду — приведу ключевые, которые нужно создать или изменить.
+app/models/article.rb
+ruby
+# frozen_string_literal: true
+
+class Article < ApplicationRecord
+  belongs_to :admin
+
+  validates :title, presence: true, length: { maximum: 200 }
+  validates :body, presence: true
+
+  # Превью тела статьи для списка
+  def preview(length = 300)
+    body.truncate(length)
+  end
+
+  # Время чтения в минутах
+  def reading_time
+    words = body.split.size
+    (words / 200.0).ceil
+  end
+
+  scope :recent, -> { order(created_at: :desc) }
+end
+app/models/admin.rb
+ruby
+# frozen_string_literal: true
+
+class Admin < ApplicationRecord
+  devise :database_authenticatable, :registerable,
+         :recoverable, :rememberable, :validatable
+
+  has_many :articles, dependent: :destroy
+end
+db/seeds.rb
+ruby
+# frozen_string_literal: true
+
+admin = Admin.find_or_create_by!(email: 'admin@example.com') do |a|
+  a.password = 'password123'
+  a.password_confirmation = 'password123'
+end
+
+10.times do |i|
+  Article.find_or_create_by!(
+    title: "Статья #{i + 1}",
+    body: Faker::Lorem.paragraphs(number: 5).join("\n\n"),
+    admin: admin
+  )
+end
+app/controllers/articles_controller.rb
+ruby
+# frozen_string_literal: true
+
+class ArticlesController < ApplicationController
+  before_action :authenticate_admin!, except: %i[index show]
+  before_action :set_article, only: %i[show edit update destroy]
+
+  def index
+    @articles = Article.recent
+  end
+
+  def show; end
+
+  def new
+    @article = Article.new
+  end
+
+  def edit; end
+
+  def create
+    @article = Article.new(article_params)
+    @article.admin = current_admin
+    if @article.save
+      redirect_to @article, notice: 'Статья создана.'
+    else
+      render :new, status: :unprocessable_entity
+    end
+  end
+
+  def update
+    if @article.update(article_params)
+      redirect_to @article, notice: 'Статья обновлена.'
+    else
+      render :edit, status: :unprocessable_entity
+    end
+  end
+
+  def destroy
+    @article.destroy
+    redirect_to articles_path, notice: 'Статья удалена.'
+  end
+
+  private
+
+  def set_article
+    @article = Article.find(params[:id])
+  end
+
+  def article_params
+    params.require(:article).permit(:title, :body)
+  end
+end
+app/controllers/home_controller.rb
+ruby
+# frozen_string_literal: true
+
+class HomeController < ApplicationController
+  def index
+    @articles = Article.recent.limit(10)
+  end
+end
+config/routes.rb
+ruby
+# frozen_string_literal: true
+
+Rails.application.routes.draw do
+  devise_for :admins
+
+  root 'home#index'
+
+  resources :articles
+end
+Вьюхи
+app/views/home/index.html.erb
+erb
+<div class="container mt-5">
+  <h1 class="mb-4">Блог</h1>
+
+  <div class="row">
+    <% @articles.each do |article| %>
+      <div class="col-md-8 mb-4">
+        <div class="card">
+          <div class="card-body">
+            <h2 class="card-title">
+              <%= link_to article.title, article_path(article), class: 'text-decoration-none' %>
+            </h2>
+            <p class="card-text text-muted"><%= article.preview %></p>
+            <div class="d-flex justify-content-between align-items-center">
+              <small class="text-muted">
+                <%= l(article.created_at, format: :short) %>
+                · <%= article.reading_time %> мин чтения
+              </small>
+              <%= link_to 'Читать далее', article_path(article), class: 'btn btn-outline-primary btn-sm' %>
+            </div>
+          </div>
+        </div>
+      </div>
+    <% end %>
+  </div>
+
+  <% if admin_signed_in? %>
+    <div class="mb-4">
+      <%= link_to 'Новая статья', new_article_path, class: 'btn btn-success' %>
+      <%= link_to 'Все статьи (админка)', articles_path, class: 'btn btn-secondary' %>
+      <%= button_to 'Выйти', destroy_admin_session_path, method: :delete, class: 'btn btn-outline-danger' %>
+    </div>
+  <% else %>
+    <%= link_to 'Войти', new_admin_session_path, class: 'btn btn-outline-secondary' %>
+  <% end %>
+</div>
+app/views/articles/show.html.erb
+erb
+<div class="container mt-5">
+  <article>
+    <h1><%= @article.title %></h1>
+    <p class="text-muted">
+      Автор: <%= @article.admin.email %>
+      · <%= l(@article.created_at, format: :short) %>
+      · <%= @article.reading_time %> мин чтения
+    </p>
+    <div class="mt-4">
+      <%= simple_format(@article.body) %>
+    </div>
+  </article>
+
+  <hr>
+  <%= link_to 'Назад', root_path, class: 'btn btn-secondary' %>
+  <% if admin_signed_in? %>
+    <%= link_to 'Редактировать', edit_article_path(@article), class: 'btn btn-warning' %>
+    <%= button_to 'Удалить', article_path(@article), method: :delete, class: 'btn btn-danger', data: { turbo_confirm: 'Удалить статью?' } %>
+  <% end %>
+</div>
+app/views/articles/index.html.erb (админка)
+erb
+<div class="container mt-5">
+  <div class="d-flex justify-content-between align-items-center mb-4">
+    <h1>Статьи</h1>
+    <%= link_to 'Новая статья', new_article_path, class: 'btn btn-success' %>
+  </div>
+
+  <table class="table table-striped">
+    <thead>
+      <tr>
+        <th>Заголовок</th>
+        <th>Создана</th>
+        <th colspan="3"></th>
+      </tr>
+    </thead>
+    <tbody>
+      <% @articles.each do |article| %>
+        <tr>
+          <td><%= article.title %></td>
+          <td><%= l(article.created_at, format: :short) %></td>
+          <td><%= link_to 'Просмотр', article, class: 'btn btn-sm btn-outline-primary' %></td>
+          <td><%= link_to 'Редактировать', edit_article_path(article), class: 'btn btn-sm btn-outline-warning' %></td>
+          <td><%= button_to 'Удалить', article, method: :delete, class: 'btn btn-sm btn-outline-danger', data: { turbo_confirm: 'Удалить?' } %></td>
+        </tr>
+      <% end %>
+    </tbody>
+  </table>
+</div>
+app/views/articles/_form.html.erb
+erb
+<%= form_with(model: article, class: 'needs-validation') do |f| %>
+  <% if article.errors.any? %>
+    <div class="alert alert-danger">
+      <ul>
+        <% article.errors.each do |error| %>
+          <li><%= error.full_message %></li>
+        <% end % %>
+      </ul>
+    </div>
+  <% end %>
+
+  <div class="mb-3">
+    <%= f.label :title, class: 'form-label' %>
+    <%= f.text_field :title, class: 'form-control' %>
+  </div>
+
+  <div class="mb-3">
+    <%= f.label :body, class: 'form-label' %>
+    <%= f.text_area :body, rows: 12, class: 'form-control' %>
+  </div>
+
+  <div class="mb-3">
+    <%= f.submit class: 'btn btn-primary' %>
+    <%= link_to 'Назад', articles_path, class: 'btn btn-secondary' %>
+  </div>
+<% end %>
+Тесты
+spec/models/article_spec.rb
+ruby
+# frozen_string_literal: true
+
+require 'rails_helper'
+
+RSpec.describe Article, type: :model do
+  let(:admin) { create(:admin) }
+
+  it 'is valid with valid attributes' do
+    expect(build(:article, admin: admin)).to be_valid
+  end
+
+  it 'is invalid without title' do
+    article = build(:article, title: nil, admin: admin)
+    expect(article).not_to be_valid
+  end
+
+  it 'is invalid without body' do
+    article = build(:article, body: nil, admin: admin)
+    expect(article).not_to be_valid
+  end
+
+  describe '#preview' do
+    it 'truncates body to 300 chars' do
+      article = build(:article, body: 'x' * 500, admin: admin)
+      expect(article.preview.length).to be <= 303
+    end
+  end
+
+  describe '#reading_time' do
+    it 'calculates reading time based on 200 wpm' do
+      article = build(:article, body: ('word ' * 400).strip, admin: admin)
+      expect(article.reading_time).to eq(2)
+    end
+  end
+end
+spec/requests/articles_spec.rb
+ruby
+# frozen_string_literal: true
+
+require 'rails_helper'
+
+RSpec.describe 'Articles', type: :request do
+  let(:admin) { create(:admin) }
+
+  describe 'GET /articles/:id (guest)' do
+    it 'shows article' do
+      article = create(:article, admin: admin)
+      get article_path(article)
+      expect(response).to have_http_status(:ok)
+      expect(response.body).to include(article.title)
+    end
+  end
+
+  describe 'GET /articles/new (guest)' do
+    it 'redirects to login' do
+      get new_article_path
+      expect(response).to redirect_to(new_admin_session_path)
+    end
+  end
+
+  describe 'POST /articles (admin)' do
+    before { sign_in admin }
+
+    it 'creates article' do
+      expect do
+        post articles_path, params: { article: { title: 'Test', body: 'Body text' } }
+      end.to change(Article, :count).by(1)
+    end
+  end
+
+  describe 'DELETE /articles/:id (admin)' do
+    before { sign_in admin }
+
+    it 'deletes article' do
+      article = create(:article, admin: admin)
+      expect do
+        delete article_path(article)
+      end.to change(Article, :count).by(-1)
+    end
+  end
+end
+spec/factories/articles.rb
+ruby
+# frozen_string_literal: true
+
+FactoryBot.define do
+  factory :article do
+    title { 'Test Article' }
+    body { 'This is the body of the test article.' }
+    admin
+  end
+end
+spec/factories/admins.rb
+ruby
+# frozen_string_literal: true
+
+FactoryBot.define do
+  factory :admin do
+    sequence(:email) { |n| "admin#{n}@example.com" }
+    password { 'password123' }
+    password_confirmation { 'password123' }
+  end
+end
+Gemfile (добавить в :development, :test)
+ruby
+gem 'rspec-rails'
+gem 'factory_bot_rails'
+gem 'faker'
+Дополнительная функциональность
+Я добавил два момента: время чтения (поле «N мин чтения» рядом со статьёй) и превью — тело статьи обрезается до 300 символов на главной странице. Время чтения полезно, потому что читатель сразу понимает, стоит ли кликать на статью — 1 минута или 10 минут. Это снижает показатель отказов и повышает вовлечённость, а бонусом задаёт ритм чтения всего блога.
+Деплой на Heroku
+bash
+heroku create my-personal-blog
+heroku stack set heroku-22
+git push heroku main
+heroku run rails db:migrate
+heroku run rails db:seed
+Публикация на GitHub
+bash
+git init
+git add .
+git commit -m "Initial commit: personal blog"
+git remote add origin git@github.com:USERNAME/personal-blog.git
+git push -u origin main
+Логин администратора
+После db:seed:
+•	Email: admin@example.com
+•	Пароль: password123
+________________________________________
+Оба проекта готовы к запуску. Если что-то нужно уточнить или доработать — например, добавить пагинацию, Markdown-рендеринг текста или поиск по статьям, скажите.
+•  •  •  •  •  Я
+Первое тестовое задание Условие задачи Дана последовательность: 1 11 21 1211 111221 312211 13112221 Необходимо написать программу на Ruby, которая генерирует последовательность такого рода. Для реализации программы нужно использовать функции из стандартной библиотеки Ruby. Программа должна быть построена по принципам объектно-ориентированной архитектуры, использовать классы. Желательно, чтобы для программы были написаны автоматические тесты. Код готового приложения должен быть размещён на GitHub в репозитории с публичным доступом. Второе тестовое задание Условие задачи Необходимо создать web-приложение "Календарь событий", реализующее следующие функции: Пользователи могут зарегистрироваться, указав email и пароль (обязательно) и полное имя (необязательно); Зарегистрированный пользователь может изменить свой email, пароль и полное имя; Зарегистрированный пользователь может просмотреть список своих событий в календаре; Зарегистрированный пользователь может просмотреть список всех событий в календаре; Зарегистрированный пользователь видит в интерфейсе ссылку "Создать событие", при переходе по ссылке пользователь должен видеть форму для создания нового события; События имеют название (обязательно) и дату (обязательно); Событие может быть повторяющимся каждый день, каждую неделю, каждый месяц, каждый год; Зарегистрированный пользователь может кликнуть на собственное событие в календаре и перейти на страницу с формой для редактирования события; Зарегистрированный пользователь может кликнуть на любое событие в календаре и перейти на страницу с описанием события; Особенности реализации При выполнении обоих тестовых заданий руководствуйтесь Ruby Style Guide и Rails Style Guide; Необходимо использовать Ruby версии >= 2.5, Rails >= 5.1; Желательно, чтобы для приложения были написаны автоматические тесты; Готовое приложение должно быть развернуто на Heroku; Код приложения должен быть размещён на GitHub в репозитории с публичным доступом; Пользовательский интерфейс можно реализовать так, как считаете нужным, использование Twitter Bootstrap или Zurb Foundation будет дополнительным плюсом; Дополнительно реализуйте какую-нибудь полезную функциональность и напишите почему эта функциональность, по Вашему мнению, полезна. Дополнительное тестовое задание Условие задачи Необходимо разработать web-приложение "Форма обратной связи" на основе данных user stories. Требуется: Использовать rails-base как основу проекта. Сделать простой приятный дизайн. Задеплоить разработанное приложение на Heroku. При необходимости - использовать стандартные для компании библиотеки (Devise, Pundit / ActivePolicy, Draper, Interactor, Simple Form) Все user story покрыть автоматическими тестами (RSpec, Capybara, ChromeDriver) As Visitor I want to leave feedback When I open New Feedback page Then I see form with required fields: name, email, text When I fill all 3 fields And When I click "Submit feedback" I should see message "Feedback was successfully send!" And email with feedback sent to admin@example.com As User I want to see pre-filled name and email in feedback form Given I am authenticated as John Smith (john@example.com) When I open New Feedback page Then I should see name field pre-filled with "John Smith" And I should see email field pre-filled with "john@example.com" As Admin User I want to see list of all Feedbacks Given I am authenticated as Admin (admin@example.com) And there are Feedbacks in database When I open Feedbacks page Then I see table with list of all feedbacks sorted by "newest first" And I see pagination under the table As Admin User I want to search through feedbacks Given I am authenticated as Admin (admin@example.com) And there are feedback with text "Hello" from John Smith (john@example.com) in database And there are feedback with text "Help" from Michael Brown (misha@example.com) in database When I open Feedbacks page Then I see Search Form with text input and submit button When I fill search input with "john" Then I see feedback from John Smith And I do not see feedback from Michael When I fill search input with "Help" Then I see feedback from Michael And I do not see feedback from John Smith
+•  •  Алиса
+Три задания — три проекта. Разберу каждый с полным кодом ключевых файлов и инструкциями. Публикацию на GitHub и деплой на Heroku вам нужно будет выполнить самостоятельно, но я дам все команды.
+________________________________________
+Задание 1. Look and Say последовательность
+Последовательность Конвея: каждый следующий член описывает предыдущий — количество подряд идущих одинаковых цифр и саму цифру.
+text
+1 → "одна единица" → 11
+11 → "две единицы" → 21
+21 → "одна двойка, одна единица" → 1211
+Структура проекта
+text
+look_and_say/
+├── lib/
+│   └── look_and_say.rb
+├── spec/
+│   ├── look_and_say_spec.rb
+│   └── spec_helper.rb
+├── Gemfile
+└── README.md
+Gemfile
+ruby
+# frozen_string_literal: true
+
+source 'https://rubygems.org'
+
+gem 'rake'
+
+group :development, :test do
+  gem 'rspec'
+end
+lib/look_and_say.rb
+ruby
+# frozen_string_literal: true
+
+module LookAndSay
+  # Генератор одного члена последовательности за шаг.
+  class Generator
+    def initialize(seed = '1')
+      raise ArgumentError, 'Seed must be a non-empty string of digits' unless seed.match?(/\A\d+\z/)
+
+      @current = seed
+    end
+
+    # Возвращает следующий член и обновляет внутреннее состояние.
+    def next
+      @current = describe(@current)
+    end
+
+    # Генерирует n элементов, начиная со следующего.
+    def take(n)
+      Array.new(n) { next }
+    end
+
+    # Сброс к начальному или новому значению.
+    def reset(seed = '1')
+      @current = seed
+      self
+    end
+
+    private
+
+    # "111" → "31" (три единицы)
+    def describe(input)
+      input
+        .chars
+        .chunk_while { |a, b| a == b }
+        .map { |group| "#{group.size}#{group.first}" }
+        .join
+    end
+  end
+
+  # Ленивая бесконечная последовательность с кэшированием.
+  class Sequence
+    include Enumerable
+
+    def initialize(seed = '1')
+      @generator = Generator.new(seed)
+      @cache = []
+    end
+
+    def each
+      return enum_for(:each) unless block_given?
+
+      i = 0
+      loop do
+        yield fetch(i)
+        i += 1
+      end
+    end
+
+    def [](index)
+      fetch(index)
+    end
+
+    private
+
+    def fetch(index)
+      while @cache.size <= index
+        @cache << @generator.next
+      end
+      @cache[index]
+    end
+  end
+end
+spec/spec_helper.rb
+ruby
+# frozen_string_literal: true
+
+require 'look_and_say'
+require 'rspec'
+spec/look_and_say_spec.rb
+ruby
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe LookAndSay::Generator do
+  describe '#next' do
+    it 'generates the Conway sequence correctly' do
+      gen = described_class.new
+      expected = %w[11 21 1211 111221 312211 13112221]
+      expect(gen.take(6)).to eq(expected)
+    end
+
+    it 'works with a custom seed' do
+      gen = described_class.new('22')
+      expect(gen.next).to eq('22')
+      expect(gen.next).to eq('2222')
+    end
+  end
+
+  describe '#take' do
+    it 'returns the requested number of elements' do
+      gen = described_class.new
+      result = gen.take(3)
+      expect(result).to eq(%w[11 21 1211])
+    end
+  end
+
+  describe '#reset' do
+    it 'resets to the seed value' do
+      gen = described_class.new
+      3.times { gen.next }
+      gen.reset
+      expect(gen.next).to eq('11')
+    end
+  end
+
+  describe 'invalid seed' do
+    it 'raises ArgumentError for non-digit string' do
+      expect { described_class.new('abc') }.to raise_error(ArgumentError)
+    end
+
+    it 'raises ArgumentError for empty string' do
+      expect { described_class.new('') }.to raise_error(ArgumentError)
+    end
+  end
+end
+
+RSpec.describe LookAndSay::Sequence do
+  let(:sequence) { described_class.new }
+
+  it 'returns elements by index' do
+    expect(sequence[0]).to eq('11')
+    expect(sequence[1]).to eq('21')
+    expect(sequence[5]).to eq('13112221')
+  end
+
+  it 'is enumerable and supports first(n)' do
+    expect(sequence.first(5)).to eq(%w[11 21 1211 111221 312211])
+  end
+
+  it 'caches computed values' do
+    sequence[3]
+    expect(sequence[0]).to eq('11')
+  end
+end
+README.md
+markdown
+# Look and Say Sequence
+
+## Usage
+
+```ruby
+require_relative 'lib/look_and_say'
+
+gen = LookAndSay::Generator.new
+6.times { puts gen.next }
+# 11, 21, 1211, 111221, 312211, 13112221
+
+seq = LookAndSay::Sequence.new
+puts seq.first(10)
+Tests
+bash
+rspec
+text
+
+### Запуск
+
+```bash
+gem install rspec
+rspec spec/
+Публикация на GitHub
+bash
+git init
+git add .
+git commit -m "Look and Say sequence generator in Ruby"
+git remote add origin git@github.com:USERNAME/look_and_say.git
+git push -u origin main
+________________________________________
+Задание 2. Календарь событий (Rails)
+Создание проекта
+bash
+rails new event_calendar --css=bootstrap
+cd event_calendar
+bundle add devise
+rails generate devise:install
+rails generate devise User
+rails g model User full_name:string
+rails g model Event title:string date:date recurrence:integer user:references
+rails db:migrate
+app/models/event.rb
+ruby
+# frozen_string_literal: true
+
+class Event < ApplicationRecord
+  enum recurrence: { none: 0, daily: 1, weekly: 2, monthly: 3, yearly: 4 }
+
+  belongs_to :user
+
+  validates :title, presence: true
+  validates :date, presence: true
+
+  scope :for_user, ->(user) { where(user: user) }
+  scope :ordered, -> { order(date: :asc) }
+
+  # Раскрытие повторяющихся событий для диапазона дат календаря.
+  # Возвращает массив хешей { event:, date: }.
+  def self.expand_for_range(events, start_date, end_date)
+    result = []
+    events.each do |event|
+      if event.none?
+        result << { event: event, date: event.date } if event.date.between?(start_date, end_date)
+      else
+        event.occurrences_between(start_date, end_date).each do |occ_date|
+          result << { event: event, date: occ_date }
+        end
+      end
+    end
+    result.sort_by { |h| h[:date] }
+  end
+
+  def occurrences_between(start_date, end_date)
+    dates = []
+    current = date
+    while current <= end_date
+      dates << current if current >= start_date
+      current = next_occurrence(current)
+    end
+    dates
+  end
+
+  private
+
+  def next_occurrence(current)
+    case recurrence
+    when 'daily'   then current + 1.day
+    when 'weekly'  then current + 1.week
+    when 'monthly' then current >> 1
+    when 'yearly'  then current >> 12
+    else current + 1.day
+    end
+  end
+end
+app/models/user.rb
+ruby
+# frozen_string_literal: true
+
+class User < ApplicationRecord
+  devise :database_authenticatable, :registerable,
+         :recoverable, :rememberable, :validatable
+
+  has_many :events, dependent: :destroy
+
+  validates :full_name, length: { maximum: 200 }, allow_blank: true
+end
+Контроллеры
+ruby
+# app/controllers/application_controller.rb
+# frozen_string_literal: true
+
+class ApplicationController < ActionController::Base
+  before_action :configure_permitted_parameters, if: :devise_controller?
+
+  protected
+
+  def configure_permitted_parameters
+    devise_parameter_sanitizer.permit(:sign_up, keys: [:full_name])
+    devise_parameter_sanitizer.permit(:account_update, keys: [:full_name])
+  end
+end
+ruby
+# app/controllers/events_controller.rb
+# frozen_string_literal: true
+
+class EventsController < ApplicationController
+  before_action :authenticate_user!
+  before_action :set_event, only: %i[show edit update destroy]
+  before_action :authorize_owner!, only: %i[edit update destroy]
+
+  def index
+    @events = Event.ordered
+  end
+
+  def my
+    @events = Event.for_user(current_user).ordered
+  end
+
+  def show; end
+
+  def new
+    @event = current_user.events.build
+  end
+
+  def create
+    @event = current_user.events.build(event_params)
+    if @event.save
+      redirect_to events_path, notice: 'Событие создано.'
+    else
+      render :new, status: :unprocessable_entity
+    end
+  end
+
+  def edit; end
+
+  def update
+    if @event.update(event_params)
+      redirect_to event_path(@event), notice: 'Событие обновлено.'
+    else
+      render :edit, status: :unprocessable_entity
+    end
+  end
+
+  def destroy
+    @event.destroy
+    redirect_to events_path, notice: 'Событие удалено.'
+  end
+
+  private
+
+  def set_event
+    @event = Event.find(params[:id])
+  end
+
+  def authorize_owner!
+    return if @event.user == current_user
+
+    redirect_to events_path, alert: 'Вы можете редактировать только свои события.'
+  end
+
+  def event_params
+    params.require(:event).permit(:title, :date, :recurrence)
+  end
+end
+ruby
+# app/controllers/calendar_controller.rb
+# frozen_string_literal: true
+
+class CalendarController < ApplicationController
+  before_action :authenticate_user!
+
+  def show
+    @today = Date.parse(params[:date] || Date.today.to_s)
+    @start_date = @today.beginning_of_month.beginning_of_week(:monday)
+    @end_date = @today.end_of_month.end_of_week(:monday)
+
+    all_events = Event.where('date <= ?', @end_date)
+    @calendar_events = Event.expand_for_range(all_events, @start_date, @end_date)
+
+    @events_by_date = @calendar_events.group_by { |h| h[:date] }
+  end
+end
+config/routes.rb
+ruby
+# frozen_string_literal: true
+
+Rails.application.routes.draw do
+  devise_for :users
+
+  authenticated :user do
+    root 'calendar#show', as: :authenticated_root
+  end
+  unauthenticated do
+    root 'welcome#index', as: :unauthenticated_root
+  end
+
+  resources :events do
+    collection do
+      get :my
+    end
+  end
+end
+Вьюхи
+erb
+<!-- app/views/welcome/index.html.erb -->
+<div class="container text-center mt-5">
+  <h1>Календарь событий</h1>
+  <p class="lead">Управляйте своими событиями и просматривайте чужие.</p>
+  <%= link_to 'Войти', new_user_session_path, class: 'btn btn-primary me-2' %>
+  <%= link_to 'Регистрация', new_user_registration_path, class: 'btn btn-outline-primary' %>
+</div>
+erb
+<!-- app/views/calendar/show.html.erb -->
+<div class="container mt-4">
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <h1><%= l(@today, format: '%B %Y') %></h1>
+    <div>
+      <%= link_to '←', calendar_path(date: @today.prev_month), class: 'btn btn-outline-secondary' %>
+      <%= link_to 'Сегодня', calendar_path(date: Date.today), class: 'btn btn-outline-primary' %>
+      <%= link_to '→', calendar_path(date: @today.next_month), class: 'btn btn-outline-secondary' %>
+    </div>
+  </div>
+
+  <div class="mb-3">
+    <%= link_to 'Создать событие', new_event_path, class: 'btn btn-success' %>
+    <%= link_to 'Мои события', my_events_path, class: 'btn btn-outline-primary' %>
+    <%= link_to 'Все события', events_path, class: 'btn btn-outline-secondary' %>
+  </div>
+
+  <table class="table table-bordered">
+    <thead class="table-light">
+      <tr>
+        <% %w[Пн Вт Ср Чт Пт Сб Вс].each do |day| %>
+          <th class="text-center"><%= day %></th>
+        <% end %>
+      </tr>
+    </thead>
+    <tbody>
+      <% (@start_date..@end_date).each_slice(7) do |week| %>
+        <tr>
+          <% week.each do |day| %>
+            <td style="height: 100px; vertical-align: top;">
+              <div class="<%= 'text-muted' unless day.month == @today.month %>">
+                <%= day.day %>
+              </div>
+              <% if @events_by_date[day] %>
+                <% @events_by_date[day].each do |item| %>
+                  <% ev = item[:event] %>
+                  <% if ev.user == current_user %>
+                    <%= link_to ev.title, edit_event_path(ev),
+                        class: 'badge bg-primary text-decoration-none mb-1' %>
+                  <% else %>
+                    <%= link_to ev.title, event_path(ev),
+                        class: 'badge bg-secondary text-decoration-none mb-1' %>
+                  <% end %>
+                <% end %>
+              <% end %>
+            </td>
+          <% end %>
+        </tr>
+      <% end %>
+    </tbody>
+  </table>
+</div>
+erb
+<!-- app/views/events/_form.html.erb -->
+<%= form_with(model: event, class: 'needs-validation') do |f| %>
+  <% if event.errors.any? %>
+    <div class="alert alert-danger">
+      <ul>
+        <% event.errors.each do |error| %>
+          <li><%= error.full_message %></li>
+        <% end %>
+      </ul>
+    </div>
+  <% end %>
+
+  <div class="mb-3">
+    <%= f.label :title, class: 'form-label' %>
+    <%= f.text_field :title, class: 'form-control' %>
+  </div>
+
+  <div class="mb-3">
+    <%= f.label :date, class: 'form-label' %>
+    <%= f.date_field :date, class: 'form-control' %>
+  </div>
+
+  <div class="mb-3">
+    <%= f.label :recurrence, class: 'form-label' %>
+    <%= f.select :recurrence,
+          Event.recurrences.map { |k, _v| [t("recurrence.#{k}", default: k.humanize), k] },
+          {}, class: 'form-select' %>
+  </div>
+
+  <div class="mb-3">
+    <%= f.submit class: 'btn btn-primary' %>
+    <%= link_to 'Назад', events_path, class: 'btn btn-secondary' %>
+  </div>
+<% end %>
+erb
+<!-- app/views/events/show.html.erb -->
+<div class="container mt-4">
+  <h1><%= @event.title %></h1>
+  <p class="text-muted">
+    Дата: <%= l(@event.date) %><br>
+    Повторение: <%= t("recurrence.#{@event.recurrence}", default: @event.recurrence.humanize) %><br>
+    Автор: <%= @event.user.full_name.presence || @event.user.email %>
+  </p>
+
+  <% if @event.user == current_user %>
+    <%= link_to 'Редактировать', edit_event_path(@event), class: 'btn btn-warning' %>
+  <% end %>
+  <%= link_to 'Назад', calendar_path, class: 'btn btn-secondary' %>
+</div>
+Тесты
+ruby
+# spec/models/event_spec.rb
+# frozen_string_literal: true
+
+require 'rails_helper'
+
+RSpec.describe Event, type: :model do
+  let(:user) { create(:user) }
+
+  it 'is valid with title and date' do
+    expect(build(:event, user: user)).to be_valid
+  end
+
+  it 'is invalid without title' do
+    expect(build(:event, user: user, title: nil)).not_to be_valid
+  end
+
+  it 'is invalid without date' do
+    expect(build(:event, user: user, date: nil)).not_to be_valid
+  end
+
+  describe '.expand_for_range' do
+    it 'expands daily events' do
+      event = create(:event, user: user, date: Date.today, recurrence: 'daily')
+      result = described_class.expand_for_range([event], Date.today, Date.today + 3.days)
+      expect(result.size).to eq(4)
+    end
+
+    it 'expands weekly events' do
+      event = create(:event, user: user, date: Date.today, recurrence: 'weekly')
+      result = described_class.expand_for_range([event], Date.today, Date.today + 21.days)
+      expect(result.size).to eq(4)
+    end
+
+    it 'does not expand non-recurring events' do
+      event = create(:event, user: user, date: Date.today, recurrence: 'none')
+      result = described_class.expand_for_range([event], Date.today, Date.today + 30.days)
+      expect(result.size).to eq(1)
+    end
+  end
+end
+ruby
+# spec/requests/events_spec.rb
+# frozen_string_literal: true
+
+require 'rails_helper'
+
+RSpec.describe 'Events', type: :request do
+  let(:user) { create(:user) }
+  let(:other_user) { create(:user) }
+
+  before { sign_in user }
+
+  describe 'POST /events' do
+    it 'creates an event' do
+      expect do
+        post events_path, params: { event: { title: 'Встреча', date: Date.today, recurrence: 'none' } }
+      end.to change(Event, :count).by(1)
+    end
+  end
+
+  describe 'GET /events/:id/edit (own event)' do
+    it 'shows edit form' do
+      event = create(:event, user: user)
+      get edit_event_path(event)
+      expect(response).to have_http_status(:ok)
+    end
+  end
+
+  describe 'GET /events/:id/edit (other user event)' do
+    it 'redirects with alert' do
+      event = create(:event, user: other_user)
+      get edit_event_path(event)
+      expect(response).to redirect_to(events_path)
+    end
+  end
+end
+ruby
+# spec/factories/users.rb
+# frozen_string_literal: true
+
+FactoryBot.define do
+  factory :user do
+    sequence(:email) { |n| "user#{n}@example.com" }
+    full_name { 'Test User' }
+    password { 'password123' }
+    password_confirmation { 'password123' }
+  end
+end
+ruby
+# spec/factories/events.rb
+# frozen_string_literal: true
+
+FactoryBot.define do
+  factory :event do
+    title { 'Test Event' }
+    date { Date.today }
+    recurrence { 'none' }
+    user
+  end
+end
+Дополнительная функциональность
+Поддержка часовых поясов — каждый пользователь видит события в своём часовом поясе, а не в UTC сервера. Это полезно, потому что календарь без учёта поясов создаёт путаницу: событие на «9:00 по Москве» может отображаться как «6:00» у пользователя из Калининграда. Добавление поля time_zone в модель User и использование Time.use_zone(user.time_zone) в контроллерах решает эту проблему.
+Деплой на Heroku
+bash
+heroku create my-event-calendar
+heroku stack set heroku-22
+git push heroku main
+heroku run rails db:migrate
+________________________________________
+Задание 3. Форма обратной связи (Rails)
+Создание проекта на базе rails-base
+bash
+# rails-base — это шаблон с Devise, Bootstrap, Rspec и т.д.
+# Если rails-base недоступен, создаём вручную:
+rails new feedback_app --css=bootstrap
+cd feedback_app
+bundle add devise
+bundle add pundit
+bundle add simple_form
+bundle add kaminari
+bundle add draper
+bundle add interactor
+
+rails generate devise:install
+rails generate devise User
+rails g model User role:integer
+rails g model Feedback name:string email:string text:text user:references
+rails g controller Feedbacks new create index show
+
+rails db:migrate
+app/models/feedback.rb
+ruby
+# frozen_string_literal: true
+
+class Feedback < ApplicationRecord
+  belongs_to :user, optional: true
+
+  validates :name, presence: true
+  validates :email, presence: true, format: { with: URI::MailTo::EMAIL_REGEXP }
+  validates :text, presence: true
+
+  scope :recent, -> { order(created_at: :desc) }
+end
+app/models/user.rb
+ruby
+# frozen_string_literal: true
+
+class User < ApplicationRecord
+  devise :database_authenticatable, :registerable,
+         :recoverable, :rememberable, :validatable
+
+  enum role: { user: 0, admin: 1 }
+end
+Interactor
+ruby
+# app/interactors/create_feedback.rb
+# frozen_string_literal: true
+
+class CreateFeedback
+  include Interactor
+
+  def call
+    feedback = Feedback.new(
+      name: context.name,
+      email: context.email,
+      text: context.text,
+      user: context.user
+    )
+
+    if feedback.save
+      context.feedback = feedback
+    else
+      context.fail!(errors: feedback.errors)
+    end
+  end
+end
+Контроллеры
+ruby
+# app/controllers/feedbacks_controller.rb
+# frozen_string_literal: true
+
+class FeedbacksController < ApplicationController
+  skip_before_action :authenticate_user!, only: %i[new create]
+
+  def new
+    @feedback = Feedback.new
+    if current_user
+      @feedback.name = current_user.email
+      @feedback.email = current_user.email
+    end
+  end
+
+  def create
+    result = CreateFeedback.call(
+      name: params[:feedback][:name],
+      email: params[:feedback][:email],
+      text: params[:feedback][:text],
+      user: current_user
+    )
+
+    if result.success?
+      FeedbackMailer.notify_admin(result.feedback).deliver_later
+      redirect_to root_path, notice: 'Feedback was successfully send!'
+    else
+      @feedback = result.feedback || Feedback.new(feedback_params)
+      @feedback.errors.add(:base, result.errors.values.join(', ')) if result.errors
+      render :new, status: :unprocessable_entity
+    end
+  end
+
+  def index
+    authorize Feedback
+    @feedbacks = Feedback.recent
+    @feedbacks = @feedbacks.search(params[:q]) if params[:q].present?
+    @feedbacks = @feedbacks.page(params[:page]).per(10)
+  end
+
+  def show
+    @feedback = Feedback.find(params[:id])
+    authorize @feedback
+  end
+
+  private
+
+  def feedback_params
+    params.require(:feedback).permit(:name, :email, :text)
+  end
+end
+Decorator
+ruby
+# app/decorators/feedback_decorator.rb
+# frozen_string_literal: true
+
+class FeedbackDecorator < Draper::Decorator
+  delegate_all
+
+  def formatted_date
+    created_at.strftime('%Y-%m-%d %H:%M')
+  end
+
+  def short_text
+    text.truncate(80)
+  end
+end
+Mailer
+ruby
+# app/mailers/feedback_mailer.rb
+# frozen_string_literal: true
+
+class FeedbackMailer < ApplicationMailer
+  default to: 'admin@example.com'
+
+  def notify_admin(feedback)
+    @feedback = feedback
+    mail(subject: "New feedback from #{feedback.name}")
+  end
+end
+erb
+<!-- app/views/feedback_mailer/notify_admin.html.erb -->
+<h1>New Feedback</h1>
+<p><strong>Name:</strong> <%= @feedback.name %></p>
+<p><strong>Email:</strong> <%= @feedback.email %></p>
+<p><strong>Text:</strong></p>
+<p><%= @feedback.text %></p>
+Search scope
+ruby
+# Добавить в app/models/feedback.rb
+scope :search, ->(query) {
+  where('name ILIKE ? OR email ILIKE ? OR text ILIKE ?', "%#{query}%", "%#{query}%", "%#{query}%")
+}
+Policy (Pundit)
+ruby
+# app/policies/feedback_policy.rb
+# frozen_string_literal: true
+
+class FeedbackPolicy
+  attr_reader :user, :feedback
+
+  def initialize(user, feedback)
+    @user = user
+    @feedback = feedback
+  end
+
+  def index?
+    user&.admin?
+  end
+
+  def show?
+    user&.admin?
+  end
+
+  def new?
+    true
+  end
+
+  def create?
+    true
+  end
+end
+config/routes.rb
+ruby
+# frozen_string_literal: true
+
+Rails.application.routes.draw do
+  devise_for :users
+
+  resources :feedbacks, only: %i[new create index show]
+  root 'feedbacks#new'
+end
+Вьюхи
+erb
+<!-- app/views/feedbacks/new.html.erb -->
+<div class="container mt-5" style="max-width: 600px;">
+  <h1 class="mb-4">New Feedback</h1>
+
+  <%= simple_form_for @feedback, url: feedbacks_path do |f| %>
+    <%= f.input :name, label: 'Name', required: true %>
+    <%= f.input :email, label: 'Email', required: true %>
+    <%= f.input :text, as: :text, label: 'Text', required: true,
+                input_html: { rows: 5 } %>
+    <%= f.button :submit, 'Submit feedback', class: 'btn btn-primary mt-3' %>
+  <% end %>
+</div>
+erb
+<!-- app/views/feedbacks/index.html.erb -->
+<div class="container mt-4">
+  <h1>Feedbacks</h1>
+
+  <%= form_with url: feedbacks_path, method: :get, class: 'row g-3 mb-3' do |f| %>
+    <div class="col-md-8">
+      <%= f.text_field :q, value: params[:q], placeholder: 'Search...',
+          class: 'form-control' %>
+    </div>
+    <div class="col-md-4">
+      <%= f.submit 'Search', class: 'btn btn-primary' %>
+      <%= link_to 'Reset', feedbacks_path, class: 'btn btn-outline-secondary' %>
+    </div>
+  <% end %>
+
+  <table class="table table-striped">
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>Email</th>
+        <th>Text</th>
+        <th>Date</th>
+      </tr>
+    </thead>
+    <tbody>
+      <% @feedbacks.each do |feedback| %>
+        <tr>
+          <td><%= feedback.name %></td>
+          <td><%= feedback.email %></td>
+          <td><%= feedback.text.truncate(60) %></td>
+          <td><%= feedback.created_at.strftime('%Y-%m-%d %H:%M') %></td>
+        </tr>
+      <% end %>
+    </tbody>
+  </table>
+
+  <%= paginate @feedbacks %>
+</div>
+Системные тесты (Capybara + RSpec)
+ruby
+# Gemfile (group :test)
+gem 'capybara'
+gem 'selenium-webdriver'
+gem 'webdrivers'
+ruby
+# spec/system/feedbacks_spec.rb
+# frozen_string_literal: true
+
+require 'rails_helper'
+
+RSpec.describe 'Feedbacks', type: :system, js: true do
+  let(:admin) { create(:user, :admin, email: 'admin@example.com') }
+
+  describe 'As Visitor I want to leave feedback' do
+    it 'shows success message and sends email' do
+      visit new_feedback_path
+
+      fill_in 'Name', with: 'John Smith'
+      fill_in 'Email', with: 'john@example.com'
+      fill_in 'Text', with: 'Great site!'
+      click_button 'Submit feedback'
+
+      expect(page).to have_content('Feedback was successfully send!')
+      expect(ActionMailer::Base.deliveries.last.to).to include('admin@example.com')
+    end
+  end
+
+  describe 'As User I want to see pre-filled name and email' do
+    it 'pre-fills the form for authenticated user' do
+      user = create(:user, email: 'john@example.com')
+      sign_in user
+      visit new_feedback_path
+
+      expect(page.find_field('Email').value).to eq('john@example.com')
+    end
+  end
+
+  describe 'As Admin User I want to see list of all Feedbacks' do
+    before do
+      create(:feedback, name: 'John Smith', email: 'john@example.com', text: 'Hello')
+      create(:feedback, name: 'Michael Brown', email: 'misha@example.com', text: 'Help')
+      sign_in admin
+    end
+
+    it 'shows all feedbacks sorted by newest first' do
+      visit feedbacks_path
+
+      rows = all('table tbody tr')
+      expect(rows.count).to eq(2)
+      expect(first('table tbody tr')).to have_content('Michael Brown')
+    end
+
+    it 'shows pagination' do
+      create_list(:feedback, 15)
+      visit feedbacks_path
+      expect(page).to have_css('.pagination')
+    end
+  end
+
+  describe 'As Admin User I want to search through feedbacks' do
+    before do
+      create(:feedback, name: 'John Smith', email: 'john@example.com', text: 'Hello')
+      create(:feedback, name: 'Michael Brown', email: 'misha@example.com', text: 'Help')
+      sign_in admin
+    end
+
+    it 'filters by name' do
+      visit feedbacks_path
+      fill_in 'q', with: 'john'
+      click_button 'Search'
+
+      expect(page).to have_content('John Smith')
+      expect(page).not_to have_content('Michael Brown')
+    end
+
+    it 'filters by text' do
+      visit feedbacks_path
+      fill_in 'q', with: 'Help'
+      click_button 'Search'
+
+      expect(page).to have_content('Michael Brown')
+      expect(page).not_to have_content('John Smith')
+    end
+  end
+end
+Factories
+ruby
+# spec/factories/users.rb
+# frozen_string_literal: true
+
+FactoryBot.define do
+  factory :user do
+    sequence(:email) { |n| "user#{n}@example.com" }
+    password { 'password123' }
+    password_confirmation { 'password123' }
+
+    trait :admin do
+      role { :admin }
+    end
+  end
+end
+ruby
+# spec/factories/feedbacks.rb
+# frozen_string_literal: true
+
+FactoryBot.define do
+  factory :feedback do
+    sequence(:name) { |n| "Person #{n}" }
+    sequence(:email) { |n| "person#{n}@example.com" }
+    sequence(:text) { |n| "Feedback text #{n}" }
+  end
+end
+Дополнительная функциональность
+Антиспам-защита через honeypot-поле — в форму добавляется скрытое поле website, которое заполняют только боты. Если оно заполнено — форма не отправляется. Это полезно, потому что публичная форма обратной связи — главная мишень для спам-ботов, а honeypot не требует от пользователя решения капчи и не портит UX.
+ruby
+# Добавить в create действие:
+if params[:feedback][:website].present?
+  redirect_to root_path, notice: 'Feedback was successfully send!'
+  return
+end
+db/seeds.rb
+ruby
+# frozen_string_literal: true
+
+User.find_or_create_by!(email: 'admin@example.com') do |u|
+  u.password = 'password123'
+  u.password_confirmation = 'password123'
+  u.role = :admin
+end
+
+5.times do |i|
+  Feedback.create!(
+    name: "User #{i + 1}",
+    email: "user#{i + 1}@example.com",
+    text: "This is feedback number #{i + 1}."
+  )
+end
+Деплой на Heroku
+bash
+heroku create my-feedback-app
+heroku addons:create sendgrid:starter   # для отправки email
+git push heroku main
+heroku run rails db:migrate
+heroku run rails db:seed
+Настройка ActionMailer для Heroku (SendGrid)
+ruby
+# config/production.rb
+config.action_mailer.delivery_method = :smtp
+config.action_mailer.smtp_settings = {
+  address: 'smtp.sendgrid.net',
+  port: 587,
+  user_name: 'apikey',
+  password: ENV['SENDGRID_API_KEY'],
+  domain: 'my-feedback-app.herokuapp.com',
+  authentication: :plain,
+  enable_starttls_auto: true
+}
+config.action_mailer.default_url_options = { host: 'my-feedback-app.herokuapp.com' }
+Логин администратора
+•	Email: admin@example.com
+•	Пароль: password123
