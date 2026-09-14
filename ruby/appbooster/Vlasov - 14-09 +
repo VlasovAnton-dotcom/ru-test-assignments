@@ -1,0 +1,132 @@
+Вот готовый сервер на Ruby с использованием Rack + Puma — это даст высокую производительность и поддержку множества одновременных соединений.
+
+```ruby
+# Gemfile
+# gem 'puma'
+# gem 'rack'
+# gem 'tzinfo'
+```
+
+```ruby
+# server.rb
+require 'rack'
+require 'time'
+require 'tzinfo'
+
+# Маппинг названий городов → IANA timezone identifiers
+CITY_TIMEZONES = {
+  'Moscow'       => 'Europe/Moscow',
+  'London'       => 'Europe/London',
+  'New York'     => 'America/New_York',
+  'Paris'        => 'Europe/Paris',
+  'Tokyo'        => 'Asia/Tokyo',
+  'Beijing'      => 'Asia/Shanghai',
+  'Sydney'       => 'Australia/Sydney',
+  'Dubai'        => 'Asia/Dubai',
+  'Berlin'       => 'Europe/Berlin',
+  'Los Angeles'  => 'America/Los_Angeles',
+  'Chicago'      => 'America/Chicago',
+  'Singapore'    => 'Asia/Singapore',
+  'Mumbai'       => 'Asia/Kolkata',
+  'Sao Paulo'    => 'America/Sao_Paulo',
+  'Istanbul'     => 'Europe/Istanbul',
+  'Cairo'        => 'Africa/Cairo',
+}
+
+# Предзагружаем TZInfo-объекты, чтобы не создавать их на каждый запрос
+CITY_TZ = CITY_TIMEZONES.transform_values { |tz| TZInfo::Timezone.get(tz) }
+  .freeze
+
+def format_time(time)
+  time.strftime('%Y-%m-%d %H:%M:%S')
+end
+
+def parse_cities(query_string)
+  # query может быть "Moscow,New+York" или "Moscow,New York"
+  return [] if query_string.nil? || query_string.empty?
+
+  query_string
+    .gsub('+', ' ')              # URL-кодирование пробела
+    .split(',')
+    .map(&:strip)
+    .reject(&:empty?)
+    .uniq
+end
+
+def time_for_city(city)
+  tz = CITY_TZ[city]
+  if tz
+    format_time(tz.now)
+  else
+    "#{city}: unknown city"
+  end
+end
+
+app = lambda do |env|
+  path = env['PATH_INFO']
+
+  if path == '/time'
+    cities = parse_cities(env['QUERY_STRING'])
+
+    lines = ["UTC: #{format_time(Time.now.utc)}"]
+    cities.each { |city| lines << time_for_city(city) }
+
+    body = lines.join("\n") + "\n"
+
+    [
+      200,
+      { 'Content-Type' => 'text/plain; charset=utf-8' },
+      [body]
+    ]
+  else
+    [
+      404,
+      { 'Content-Type' => 'text/plain' },
+      ["Not Found\n"]
+    ]
+  end
+end
+
+Rack::Handler::Puma.run(app, Host: '0.0.0.0', Port: 9292, Threads: '4:16')
+```
+
+## Запуск
+
+```bash
+gem install puma rack tzinfo
+ruby server.rb
+```
+
+## Проверка
+
+```bash
+# Только UTC
+curl http://localhost:9292/time
+# UTC: 2026-09-14 11:18:12
+
+# UTC + города
+curl 'http://localhost:9292/time?Moscow,New York'
+# UTC: 2026-09-14 11:18:12
+# Moscow: 2026-09-14 14:18:12
+# New York: 2026-09-14 07:18:12
+```
+
+## Что важно для производительности
+
+- **Puma** — многопоточный сервер. Строка `Threads: '4:16'` означает 4 базовых потока и до 16 пиковых. На многоядерной машине лучше запускать с `Workers: N`, где N — число ядер (через конфиг или `PUMA_WORKERS`).
+
+- **TZInfo-объекты предзагружены** — `TZInfo::Timezone.get` создаётся один раз при старте, а не на каждый запрос. Это убирает накладные расходы на парсинг timezone-данных.
+
+- **Нет тяжёлых middleware** — чистый Rack lambda, без Rails/Sinatra overhead. Ответ собирается за микросекунды.
+
+- **Минимальный response body** — plain text без JSON-сериализации.
+
+## Если нужно ещё быстрее
+
+Для экстремальных нагрузок можно заменить Puma на `falcon` (`gem install falcon rack`), который использует `async`/fibers вместо потоков и отлично держит десятки тысяч соединений. Код приложения менять не нужно — только строку запуска:
+
+```ruby
+Rack::Handler::Falcon.run(app, Host: '0.0.0.0', Port: 9292)
+```
+
+Словарь `CITY_TIMEZONES` легко расширить — достаточно добавить строку вида `'Мадрид' => 'Europe/Madrid'`. Если нужна поддержка русских названий городов, можно добавить альтернативные ключи в тот же хеш.
