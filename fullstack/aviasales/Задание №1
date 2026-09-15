@@ -1,0 +1,268 @@
+Задание №1 - gates-team-fullstack.md - Vlasov - 15-09-26 +
+Архитектура решения
+•	Frontend: React + Redux + Redux-Saga.
+•	Backend: Python (Flask) + PostgreSQL (в этом примере данные отдаются из JSON, но структура сразу сделана так, чтобы потом легко подключить БД).
+•	Данные: dashboard_data.json → сервер → фронтенд.
+________________________________________
+Backend (Python + Flask)
+Структура проекта
+text
+backend/
+  app.py
+  dashboard_data.json
+dashboard_data.json (пример)
+json
+{
+  "summary": {
+    "totalOrders": 127,
+    "revenue": 389000,
+    "pendingOrders": 8
+  },
+  "recentOrders": [
+    {
+      "id": 1001,
+      "date": "2026-09-14",
+      "status": "delivered",
+      "amount": 18500
+    },
+    {
+      "id": 1002,
+      "date": "2026-09-13",
+      "status": "pending",
+      "amount": 22300
+    }
+  ],
+  "trend": [
+    {"day": "Mon", "value": 42000},
+    {"day": "Tue", "value": 39000},
+    {"day": "Wed", "value": 51000}
+  ]
+}
+app.py
+python
+from flask import Flask, jsonify, send_from_directory
+import os
+
+app = Flask(__name__)
+
+@app.route('/api/dashboard')
+def get_dashboard():
+    # В реальном проекте здесь будет запрос к PostgreSQL
+    with open(os.path.join(os.path.dirname(__file__), 'dashboard_data.json'), 'r', encoding='utf-8') as f:
+        import json
+        data = json.load(f)
+    return jsonify(data)
+
+# Опционально: раздача статики, если фронтенд не на отдельном сервере
+@app.route('/', defaults={'path': 'index.html'})
+@app.route('/<path:path>')
+def serve_static(path):
+    return send_from_directory('../frontend/build', path)
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=8000)
+Запустить: python app.py. Эндпоинт: http://localhost:8000/api/dashboard.
+________________________________________
+Frontend (React + Redux + Redux-Saga)
+Установка зависимостей (пример)
+bash
+npm install react react-dom react-router-dom redux react-redux redux-saga axios
+Структура (упрощённо)
+text
+
+frontend/
+  src/
+    store/
+      configureStore.js
+      sagas/
+        dashboardSaga.js
+      reducers/
+        dashboardReducer.js
+    components/
+      DashboardSummary.jsx
+      RecentOrdersTable.jsx
+      TrendChart.jsx
+    App.jsx
+________________________________________
+Reducer (src/store/reducers/dashboardReducer.js)
+js
+const initialState = {
+  data: null,
+  loading: false,
+  error: null
+};
+
+export const FETCH_DASHBOARD_REQUEST = 'FETCH_DASHBOARD_REQUEST';
+export const FETCH_DASHBOARD_SUCCESS = 'FETCH_DASHBOARD_SUCCESS';
+export const FETCH_DASHBOARD_FAILURE = 'FETCH_DASHBOARD_FAILURE';
+
+export default function dashboardReducer(state = initialState, action) {
+  switch (action.type) {
+    case FETCH_DASHBOARD_REQUEST:
+      return { ...state, loading: true, error: null };
+    case FETCH_DASHBOARD_SUCCESS:
+      return { ...state, loading: false, data: action.payload };
+    case FETCH_DASHBOARD_FAILURE:
+      return { ...state, loading: false, error: action.payload };
+    default:
+      return state;
+  }
+}
+________________________________________
+Saga (src/store/sagas/dashboardSaga.js)
+js
+
+import { call, put, takeLatest } from 'redux-saga/effects';
+import axios from 'axios';
+import {
+  FETCH_DASHBOARD_REQUEST,
+  FETCH_DASHBOARD_SUCCESS,
+  FETCH_DASHBOARD_FAILURE
+} from '../reducers/dashboardReducer';
+
+function* fetchDashboard() {
+  try {
+    const response = yield call(axios.get, 'http://localhost:8000/api/dashboard');
+    yield put({ type: FETCH_DASHBOARD_SUCCESS, payload: response.data });
+  } catch (error) {
+    yield put({ type: FETCH_DASHBOARD_FAILURE, payload: error.message });
+  }
+}
+
+export function* watchDashboard() {
+  yield takeLatest(FETCH_DASHBOARD_REQUEST, fetchDashboard);
+}
+________________________________________
+Store (src/store/configureStore.js)
+js
+import { createStore, applyMiddleware, combineReducers } from 'redux';
+import createSagaMiddleware from 'redux-saga';
+import dashboardReducer, { watchDashboard } from './sagas/dashboardSaga';
+
+const sagaMiddleware = createSagaMiddleware();
+const rootReducer = combineReducers({
+  dashboard: dashboardReducer
+});
+
+const store = createStore(rootReducer, applyMiddleware(sagaMiddleware));
+sagaMiddleware.run(watchDashboard);
+
+export default store;
+________________________________________
+Компоненты (упрощённая вёрстка)
+DashboardSummary.jsx
+jsx
+import React from 'react';
+
+export default function DashboardSummary({ summary }) {
+  if (!summary) return null;
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '16px', marginBottom: '24px' }}>
+      <div style={{ padding: '16px', border: '1px solid #ddd', borderRadius: '8px' }}>
+        <h3>Всего заказов</h3>
+        <p style={{ fontSize: '20px', fontWeight: 'bold' }}>{summary.totalOrders}</p>
+      </div>
+      <div style={{ padding: '16px', border: '1px solid #ddd', borderRadius: '8px' }}>
+        <h3>Выручка</h3>
+        <p style={{ fontSize: '20px', fontWeight: 'bold' }}>
+          {new Intl.NumberFormat('ru-RU').format(summary.revenue)} ₽
+        </p>
+      </div>
+      <div style={{ padding: '16px', border: '1px solid #ddd', borderRadius: '8px' }}>
+        <h3>В работе</h3>
+        <p style={{ fontSize: '20px', fontWeight: 'bold', color: '#d9534f' }}>
+          {summary.pendingOrders}
+        </p>
+      </div>
+    </div>
+  );
+}
+RecentOrdersTable.jsx (простая таблица)
+jsx
+
+import React from 'react';
+
+export default function RecentOrdersTable({ orders }) {
+  return (
+    <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: '24px' }}>
+      <thead>
+        <tr>
+          <th style={{ border: '1px solid #ccc', padding: '8px' }}>ID</th>
+          <th style={{ border: '1px solid #ccc', padding: '8px' }}>Дата</th>
+          <th style={{ border: '1px solid #ccc', padding: '8px' }}>Статус</th>
+          <th style={{ border: '1px solid #ccc', padding: '8px' }}>Сумма</th>
+        </tr>
+      </thead>
+      <tbody>
+        {orders?.map((o) => (
+          <tr key={o.id}>
+            <td style={{ border: '1px solid #ccc', padding: '8px' }}>{o.id}</td>
+            <td style={{ border: '1px solid #ccc', padding: '8px' }}>{o.date}</td>
+            <td style={{ border: '1px solid #ccc', padding: '8px' }}>{o.status}</td>
+            <td style={{ border: '1px solid #ccc', padding: '8px' }}>
+              {new Intl.NumberFormat('ru-RU').format(o.amount)} ₽
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+TrendChart.jsx (заглушка под график)
+jsx
+import React from 'react';
+
+export default function TrendChart({ trend }) {
+  // Здесь можно подключить chart.js / recharts. Пока простая визуализация
+  return (
+    <div style={{ background: '#f5f5f5', padding: '12px', borderRadius: '8px' }}>
+      <h3>Динамика выручки по дням</h3>
+      {trend?.map((t, i) => (
+        <div key={i} style={{ marginBottom: '4px' }}>
+          <span>{t.day}: {new Intl.NumberFormat('ru-RU').format(t.value)} ₽</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+________________________________________
+App.jsx + подключение Redux
+jsx
+import React, { useEffect } from 'react';
+import { useDispatch, useSelector } from 'react-redux';
+import { FETCH_DASHBOARD_REQUEST } from './store/reducers/dashboardReducer';
+import DashboardSummary from './components/DashboardSummary';
+import RecentOrdersTable from './components/RecentOrdersTable';
+import TrendChart from './components/TrendChart';
+
+function App() {
+  const dispatch = useDispatch();
+  const { data, loading, error } = useSelector((state) => state.dashboard);
+
+  useEffect(() => {
+    dispatch({ type: FETCH_DASHBOARD_REQUEST });
+  }, [dispatch]);
+
+  if (loading) return <div>Загрузка дашборда...</div>;
+  if (error) return <div style={{ color: 'red' }}>Ошибка: {error}</div>;
+
+  return (
+    <main style={{ padding: '24px' }}>
+      <h1>Личный кабинет партнёра</h1>
+      <DashboardSummary summary={data?.summary} />
+      <h2>Последние заказы</h2>
+      <RecentOrdersTable orders={data?.recentOrders} />
+      <TrendChart trend={data?.trend} />
+    </main>
+  );
+}
+
+export default App;
+________________________________________
+Что важно показать при сдаче задания
+1.	Самостоятельность в принятии решений: ты сам выбрал структуру данных, типы статусов, компоновку блоков и т.п. В README кратко опиши эти решения.
+2.	Работа с неполными данными: макет отсутствовал — ты сделал типовой дашборд и описал допущения.
+3.	Качество вёрстки: адаптивность, читаемость, базовые стили, форматирование чисел/дат.
+4.	Архитектура: Redux + Redux-Saga, разделение на компоненты, чистые функции, отсутствие «спагетти» в логике.
+5.	Готовность к БД: в бэкенде место для PostgreSQL уже подготовлено, структура API совпадает с тем, что будет приходить из БД.
+
