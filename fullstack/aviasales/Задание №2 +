@@ -1,0 +1,403 @@
+Задание №2 - marketing.md - Vlasov - 15-09-26 + 
+
+Ниже представлена реализация описанного маркетингового блока. Архитектура разделена на фронтенд (React + TypeScript + Effector) и бэкенд (Node.js + Express + PostgreSQL).
+Backend: Node.js, Express, PostgreSQL
+Структура проекта backend/:
+•	src/routes/user.ts — эндпоинты для создания пользователя.
+•	src/models/User.ts — модель данных.
+•	src/db/index.ts — инициализация подключения к БД.
+•	src/server.ts — точка входа.
+1. Модель User (src/models/User.ts)
+typescript
+import { Model, DataTypes } from 'sequelize';
+import sequelize from '../db';
+
+class User extends Model {}
+
+User.init({
+  email: {
+    type: DataTypes.STRING,
+    allowNull: false,
+    unique: true,
+    validate: {
+      isEmail: { msg: 'Invalid email format' }
+    }
+  },
+}, { sequelize, modelName: 'User', tableName: 'users' });
+
+export default User;
+2. Роутер (src/routes/user.ts)
+typescript
+import { Router, Request, Response } from 'express';
+import User from '../models/User';
+
+const router = Router();
+
+// Создание пользователя или возврат существующего
+router.post('/', async (req: Request, res: Response) => {
+  const { email } = req.body;
+  
+  if (!email || !/\S+@\S+\.\S+/.test(email)) {
+    return res.status(400).json({ error: 'Invalid email format' });
+  }
+
+  try {
+    // Ищем существующую запись
+    let user = await User.findOne({ where: { email } });
+
+    if (!user) {
+      // Создаем новую, если не найдена
+      user = await User.create({ email });
+    }
+    
+    // Возвращаем ID в любом случае
+    res.json({ id: user.id, message: user.createdAt === user.updatedAt ? 'Created' : 'Exists' });
+  } catch (e: any) {
+    // Обработка ошибки уникальности (гонка условий)
+    if (e.name === 'SequelizeUniqueConstraintError') {
+      const existingUser = await User.findOne({ where: { email } });
+      return res.json({ id: existingUser!.id, message: 'Exists' });
+    }
+    console.error(e);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+export default router;
+3. Точка входа (src/server.ts)
+typescript
+import express from 'express';
+import cors from 'cors';
+import bodyParser from 'body-parser';
+import userRouter from './routes/user';
+import sequelize from './db';
+
+const app = express();
+const PORT = process.env.PORT || 4000;
+
+app.use(cors()); 
+app.use(bodyParser.json());
+
+app.use('/api/users', userRouter);
+
+(async () => {
+  try {
+    await sequelize.authenticate();
+    await sequelize.sync(); // В продакшене использовать миграции
+    app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+  } catch (error) {
+    console.error('Unable to start server:', error);
+  }
+})();
+Frontend: React, TypeScript, Effector
+Для управления состоянием используется Effector. Он отлично подходит для изоляции побочных эффектов (запросов на сервер) и декларативного описания состояний формы.
+Структура проекта frontend/src/:
+•	shared/lib/api.ts — функции запросов.
+•	features/subscription/ — логика первого блока.
+•	features/sharing/ — логика второго блока.
+•	pages/CampaignPage.tsx — сборка страницы.
+1. API (src/shared/lib/api.ts)
+typescript
+interface CreateUserResponse {
+  id: string;
+  message?: string;
+}
+
+export const createUser = async (email: string): Promise<CreateUserResponse> => {
+  const response = await fetch('http://localhost:4000/api/users', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email })
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json();
+    throw new Error(errorData.error || 'Network request failed');
+  }
+  return response.json();
+};
+2. Логика подписки (Effector store, src/features/subscription/model.ts)
+typescript
+import { createStore, createEvent, sample } from 'effector';
+
+type SubscriptionState = {
+  email: string;
+  isValid: boolean;
+  isSubmitting: boolean;
+  errorMessage: string | null;
+  submitted: boolean;
+};
+
+export const $subscription = createStore<SubscriptionState>({
+  email: '',
+  isValid: false,
+  isSubmitting: false,
+  errorMessage: null,
+  submitted: false,
+});
+
+export const emailChanged = createEvent<string>();
+export const submitForm = createEvent();
+export const submitSuccess = createEvent();
+export const submitFailure = createEvent<string>();
+
+$subscription.on(emailChanged, (state, email) => ({
+  ...state,
+  email,
+  isValid: /\S+@\S+\.\S+/.test(email),
+}));
+
+sample({
+  clock: submitForm,
+  source: $subscription,
+  filter: (s) => s.isValid && !s.isSubmitting && !s.submitted,
+  target: submitSuccess,
+});
+
+sample({
+  clock: submitForm,
+  source: $subscription,
+  filter: (s) => !s.isValid,
+  target: submitFailure.prepend(() => 'Неверный формат почты'),
+});
+
+$subscription.on(submitSuccess, (s) => ({ ...s, isSubmitting: true }));
+$subscription.on(submitFailure, (s, err) => ({ ...s, errorMessage: err }));
+$subscription.on(submitSuccess, (s) => ({ ...s, submitted: true, isSubmitting: false }));
+3. Компонент формы (src/features/ui/SubscriptionForm.tsx)
+typescript
+import React from 'react';
+import { useUnit } from 'effector-react';
+import { $subscription, emailChanged, submitForm } from '../model';
+
+export const SubscriptionForm: React.FC = () => {
+  const [{ email, isValid, isSubmitting, errorMessage, submitted }, change$, submit$] = useUnit({
+    state: $subscription,
+    change: emailChanged,
+    submit: submitForm,
+  });
+
+  if (submitted) return <div className="text-gray-500">Спасибо! Проверяем почту...</div>;
+
+  return (
+    <form onSubmit={(e) => { e.preventDefault(); submit$(); }}>
+      <input
+        type="email"
+        value={email}
+        disabled={isSubmitting}
+        onChange={(e) => change$(e.target.value)}
+        placeholder="Введите ваш E-mail"
+        className={`border p-2 rounded w-full mb-2 ${errorMessage ? 'border-red-500' : ''}`}
+      />
+      {errorMessage && <p className="text-sm text-red-600">{errorMessage}</p>}
+      <button 
+        type="submit" 
+        disabled={!isValid || isSubmitting} 
+        className={`w-full py-2 rounded ${isValid ? 'bg-blue-600 hover:bg-blue-700' : 'bg-gray-400 cursor-not-allowed'}`}>
+          {isSubmitting ? 'Отправляем...' : 'Подписаться'}
+      </button>
+    </form>
+  );
+};
+4. Логика шаринга ($sharing.model.ts)
+typescript
+import { createStore, createEvent } from 'effector';
+
+export type SharingState = {
+  sharedViaApi: boolean;
+  confirmedByUser: boolean;
+  manualConfirmWithoutClick: boolean;
+};
+
+export const $sharing = createStore<SharingState>({
+  sharedViaApi: false,
+  confirmedByUser: false,
+  manualConfirmWithoutClick: false,
+});
+
+export const openShareDialog = createEvent<(network: string) => void>();
+export const apiConfirmedShare = createEvent();
+export const userClickedConfirm = createEvent();
+
+$sharing.on(apiConfirmedShare, (s) => ({ ...s, sharedViaApi: true }));
+$sharing.on(userClickedConfirm, (s) => ({ ...s, confirmedByUser: true }));
+
+// Если пользователь нажал "Я поделился", но апи еще не вернуло успех
+$sharing.reset(
+  $sharing.map(s => s.confirmedByUser && !s.sharedViaApi).watch((flag) => {
+    if (flag) {
+      // Показываем ошибку через событие UI
+      showManualConfirmError(true);
+    }
+  })
+);
+
+// Сбрасываем флаг ручной ошибки при реальном шеринге
+sample({
+  clock: apiConfirmedShare,
+  fn: () => false,
+  target: showManualConfirmError,
+});
+
+export const showManualConfirmError = createStore(false);
+5. Компонент кнопок шаринга (src/features/ui/SharingButtons.tsx)
+typescript
+import React from 'react';
+import { useUnit } from 'effector-react';
+import { $sharing, openShareDialog, apiConfirmedShare, userClickedConfirm, showManualConfirmError } from '../model';
+
+const shareUrl = encodeURIComponent(window.location.href);
+const title = encodeURIComponent('Посмотри этот проект');
+
+export const SharingButtons: React.FC = () => {
+  const [state, open$, confirm$, errorVisible] = useUnit({
+    state: $sharing,
+    open: openShareDialog,
+    confirm: userClickedConfirm,
+    errorVisible: showManualConfirmError,
+  });
+
+  const handleShare = (network: string) => {
+    let url = '';
+    switch(network) {
+      case 'vk': url = `https://vk.com/share.php?url=${shareUrl}&title=${title}`; break;
+      case 'telegram': url = `https://t.me/share/url?url=${shareUrl}&text=${title}`; break;
+      case 'twitter': url = `https://twitter.com/intent/tweet?url=${shareUrl}&text=${title}`; break;
+    }
+    window.open(url, '_blank');
+    // Эмуляция ответа сервера после клика
+    setTimeout(() => apiConfirmedShare(), 500); 
+  };
+
+  if (state.sharedViaApi) return <div className="text-green-600 font-semibold">Вы успешно поделились!</div>;
+
+  return (
+    <div>
+      {errorVisible && <p className="text-sm text-red-600 mb-2">Сначала нажмите на кнопку соцсети.</p>}
+      <div className="flex gap-2">
+        <button onClick={() => handleShare('vk')} disabled={state.sharedViaApi} className="flex-1 bg-blue-700 text-white py-2 rounded">VK</button>
+        <button onClick={() => handleShare('telegram')} disabled={state.sharedViaApi} className="flex-1 bg-blue-500 text-white py-2 rounded">Telegram</button>
+        <button onClick={() => handleShare('twitter')} disabled={state.sharedViaApi} className="flex-1 bg-sky-400 text-white py-2 rounded">X</button>
+      </div>
+      <button 
+        onClick={confirm$} 
+        disabled={state.sharedViaApi} 
+        className="mt-3 w-full py-2 border rounded hover:bg-gray-50">
+          Я поделился
+      </button>
+    </div>
+  );
+};
+6. Сборка страницы и финальный экран (src/pages/CampaignPage.tsx)
+typescript
+import React, { useEffect } from 'react';
+import { SubscriptionForm } from '../features/ui/SubscriptionForm';
+import { SharingButtons } from '../features/ui/SharingButtons';
+import { useUnit } from 'effector-react';
+import { $subscription, $sharing, createUserFx } from '../features/subscription/model';
+import { redirectToFinalScreen } from '../features/final-screen/model';
+
+export const CampaignPage: React.FC = () => {
+  const [subState, sharingState, submit$, fxDone, fxFail] = useUnit({
+    subState: $subscription,
+    sharingState: $sharing,
+    submit: submitForm,
+    done: redirectToFinalScreen,
+    fail: submitFailure,
+  });
+
+  useEffect(() => {
+    const unsubFx = createUserFx.finally.watch((res) => {
+      if (res.status === 'done') {
+        localStorage.setItem('campaign_user_id', res.data.id);
+        redirectToFinalScreen();
+      }
+    });
+    return () => unsubFx();
+  }, []);
+
+  useEffect(() => {
+    if (subState.submitted && sharingState.sharedViaApi) {
+      createUserFx(subState.email);
+    }
+  }, [subState.submitted, sharingState.sharedViaApi]);
+
+  if (window.location.pathname === '/final') {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="text-center space-y-4">
+          <h1 className="text-3xl font-bold">Готово!</h1>
+          <p>Спасибо за участие в кампании. Мы отправили вам приветственное письмо.</p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="max-w-md mx-auto p-6 mt-20 border rounded-lg shadow-lg">
+      <h2 className="text-2xl font-bold mb-6">Присоединяйтесь к нам</h2>
+      
+      {!subState.submitted && <SubscriptionForm />}
+      
+      {subState.submitted && !sharingState.sharedViaApi && (
+        <>
+          <p className="mb-4">Теперь поделитесь этой страницей с друзьями:</p>
+          <SharingButtons />
+        </>
+      )}
+    </div>
+  );
+};
+7. Маршрутизация (для перехода на /final, src/main.tsx)
+typescript
+import React from 'react';
+import ReactDOM from 'react-dom/client';
+import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
+import { CampaignPage } from './pages/CampaignPage';
+
+ReactDOM.createRoot(document.getElementById('root')!).render(
+  <React.StrictMode>
+    <Router>
+      <Routes>
+        <Route path="/" element={<CampaignPage />} />
+        <Route path="/final" element={<CampaignPage />} />
+      </Routes>
+    </Router>
+  </React.StrictMode>
+);
+Инструкция по запуску
+1. Серверная часть (Backend)
+1.	Убедитесь, что у вас установлены Node.js и запущенный PostgreSQL.
+2.	Создайте базу данных, например marketing_campaign.
+3.	Скопируйте код backend в папку backend/. Установите зависимости:
+bash
+cd backend
+npm install
+4.	В файле src/db/index.ts настройте подключение к вашей БД:
+typescriptКопировать
+import { Sequelize } from 'sequelize';
+export default new Sequelize('marketing_campaign', 'postgres', 'password', {
+  host: 'localhost',
+  dialect: 'postgres'
+});
+5.	Запустите сервер:
+bash
+npx ts-node src/server.ts
+Сервер будет доступен по адресу http://localhost:4000.
+2. Клиентская часть (Frontend)
+1.	Скопируйте код frontend в папку frontend/.
+2.	Установите зависимости:
+bash
+cd frontend
+npm install
+3.	При необходимости добавьте прокси в package.json для обхода CORS во время разработки: "proxy": "http://localhost:4000"
+4.	Запустите разработку:
+bash
+npm run dev
+Приложение будет доступно по адресу http://localhost:5173.
+Деплой (Vercel + Railway/Supabase)
+Самый быстрый способ выкатить оба сервиса бесплатно:
+1.	База данных: Зарегистрируйтесь на Supabase (это managed PostgreSQL). Создайте инстанс, перейдите в Settings -> Database и скопируйте строку подключения (Connection String). Замените ею конструктор new Sequelize(...) в вашем коде.
+2.	Backend: Загрузите код бэкенда на GitHub. Зайдите на Railway.app, создайте новый проект из GitHub, выберите репозиторий с бэкендом. В разделе Variables добавьте переменную окружения DATABASE_URL со строкой подключения от Supabase. Нажмите Deploy.
+3.	Frontend: Загрузите код фронтенда на GitHub. Зайдите на Vercel, импортируйте репозиторий. В Settings -> Environment Variables добавьте переменные (если они нужны вашему API, например, внутренний URL базы). Vercel автоматически определит стек Next.js/Vite + React + TS и соберет статику.
+
