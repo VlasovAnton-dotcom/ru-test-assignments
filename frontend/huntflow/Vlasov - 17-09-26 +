@@ -1,0 +1,147 @@
+Задание №1 - Решение - Vlasov - 17-09-26 +
+Ниже представлена архитектурная и техническая реализация интерфейса для работы с комментариями на Vue.js, основанная на ваших требованиях.
+
+1. Архитектура компонентов (Vue Single File Components)
+
+Для реализации CRUD-операций (просмотр, добавление, редактирование) оптимально разделить интерфейс на три основных компонента:
+
+CommentList.vue — отвечает за отображение списка комментариев. Принимает массив объектов comments через пропс. Внутри использует компонент CommentItem.
+CommentItem.vue — представляет собой один комментарий. Отвечает за переключение между режимами просмотра и редактирования, а также за вызов событий удаления.
+CommentForm.vue — форма добавления нового комментария или редактирования существующего. Используется как в режиме создания (внизу списка), так и инлайново внутри CommentItem при нажатии кнопки «Редактировать».
+
+Пример структуры данных:
+
+javascript
+Копировать
+{
+  id: 'uuid-v4',
+  author: 'Иван Петров',
+  text: 'Текст комментария',
+  createdAt: '2023-10-27T10:00:00Z', // ISO строка
+  isEditing: false // Локальное состояние для режима редактирования
+}
+
+Логика взаимодействия (родительский компонент, например TaskCommentsPanel.vue):
+Родитель хранит основной массив state.comments, загружает его с бэкенда и передает вниз. Дочерние компоненты ничего не мутируют напрямую, а выбрасывают события (emit), которые родитель обрабатывает и отправляет запросы на API.
+
+@comment-deleted="handleDelete" — удаление.
+@comment-updated="handleUpdate" — сохранение изменений после редактирования.
+@comment-created="handleCreate" — добавление нового комментария.
+2. Работа с API (Composition API)
+
+Для асинхронных операций рекомендуется использовать Composition API (setup()). Это позволит вынести логику запросов в отдельные переиспользуемые композиционные функции (composables).
+
+Пример хука useComments.js:
+
+javascript
+Копировать
+import { ref } from 'vue'
+import apiClient from '@/services/api' // Ваш экземпляр axios
+
+export function useComments(taskId) {
+  const comments = ref([])
+  const loading = ref(false)
+  const error = ref(null)
+
+  const fetchComments = async () => {
+    loading.value = true
+    try {
+      const response = await apiClient.get(`/tasks/${taskId}/comments`)
+      comments.value = response.data.map(c => ({ ...c, isEditing: false }))
+    } catch (e) {
+      error.value = e.message
+    } finally {
+      loading.value = false
+    }
+  }
+
+  const addComment = async (text) => { /* ... */ }
+  const updateComment = async (id, text) => { /* ... */ }
+  const deleteComment = async (id) => { /* ... */ }
+
+  return { comments, loading, error, fetchComments, addComment, updateComment, deleteComment }
+}
+
+Внутри CommentItem.vue локальное состояние isEditing управляет видимостью формы редактирования. При сохранении вызывается событие update, которое пробрасывается до родителя, где происходит вызов updateComment из хука и обновление массива в состоянии.
+
+3. Верстка по методологии БЭМ
+
+Поскольку макет находится в Zeplin/Sketch, точные имена блоков будут зависеть от дизайн-системы проекта. Ниже приведена универсальная структура именования, которую следует адаптировать под ваш дизайн.
+
+Блок: .comment
+
+Элементы:
+.comment__header — контейнер для автора и даты.
+.comment__author
+.comment__date
+.comment__body — текст комментария.
+.comment__actions — блок кнопок («Редактировать», «Удалить»).
+Модификаторы:
+.comment--edit-mode — добавляется к корню блока, когда активен режим редактирования. Позволяет менять внешний вид (например, скрывать текст и показывать форму).
+.comment--disabled — если комментарий заблокирован.
+
+Блок: .comment-form
+
+Элементы:
+.comment-form__textarea
+.comment-form__controls
+.comment-form__submit
+.comment-form__cancel
+Модификаторы:
+.comment-form--inline — используется при редактировании прямо в ленте.
+.comment-form--new — используется в футере ленты для добавления нового комментария.
+
+Пример HTML-разметки одного комментария:
+
+html
+Копировать
+<div class="comment" :class="{ 'comment--edit-mode': comment.isEditing }">
+  <div class="comment__header">
+    <span class="comment__author">{{ comment.author }}</span>
+    <time class="comment__date">{{ formatDate(comment.createdAt) }}</time>
+  </div>
+  
+  <!-- Режим просмотра -->
+  <template v-if="!comment.isEditing">
+    <p class="comment__body">{{ comment.text }}</p>
+    <div class="comment__actions">
+      <button 
+        type="button" 
+        class="btn btn--link comment__action-btn"
+        @click="startEdit"
+      >Редактировать</button>
+      <button 
+        type="button" 
+        class="btn btn--link btn--danger comment__action-btn"
+        @click="$emit('comment-deleted', comment.id)"
+      >Удалить</button>
+    </div>
+  </template>
+
+  <!-- Режим редактирования (можно вынести в отдельный CommentForm.vue) -->
+  <form v-else class="comment-form comment-form--inline" @submit.prevent="saveEdit">
+    <textarea 
+      class="comment-form__textarea" 
+      v-model="localText"
+      ref="editInput"
+    ></textarea>
+    <div class="comment-form__controls">
+      <button type="submit" class="btn btn--primary comment-form__submit">Сохранить</button>
+      <button type="button" class="btn btn--secondary comment-form__cancel" @click="cancelEdit">Отмена</button>
+    </div>
+  </form>
+</div>
+4. Интеграция с Zeplin / Sketch
+
+Так как доступ к оригинальному файлу требует заявки, разработка может вестись параллельно со следующим процессом:
+
+Запрос доступа: Отправка письма на hello@huntflow.ru с указанием ID проекта в Zeplin и email разработчиков.
+Изучение спецификаций: В ожидании доступа разработчик анализирует предоставленные статичные макеты. Измеряются отступы (стандартно 8px или 16px grid), фиксируются размеры шрифтов (Desktop Base 16px, множители line-height), веса начертаний и цвета (HEX/HSLA).
+Извлечение ассетов: Скачивание иконок действий (карандаш, корзина) в формате SVG для использования в <svg> внутри Vue-компонентов.
+Адаптация: После получения доступа проверяется соответствие верстки интерактивным состояниям из Zeplin (Hover, Focus, Disabled, Pressed для кнопок; пустое состояние ленты комментариев).
+5. Дополнительные рекомендации
+Доступность (a11y): Все интерактивные элементы должны иметь читаемые подписи для скринридеров (aria-label="Редактировать комментарий"). Кнопки реализуются тегом <button>, ссылки — <a>. Для динамических областей (открытие формы) используйте атрибут aria-expanded.
+Обработка ошибок: На уровне UI необходимо предусмотреть отображение состояний загрузки (скелетон или спиннер), сетевых ошибок (баннер с текстом «Не удалось загрузить комментарии») и пустого состояния (иллюстрация + текст «Комментариев пока нет»).
+Оптимизация рендера: Используйте директиву v-memo или вычисляемые свойства (computed) для тяжелых операций форматирования дат, чтобы избежать перерисовки всего списка при обновлении одного комментария.
+Локализация: Текстовые константы («Редактировать», «Сохранить») лучше выносить в словарь i18n уже на этапе разработки шаблонов.
+Типизация: Если проект использует TypeScript, обязательно опишите интерфейс Comment для предотвращения ошибок типов при передаче данных между компонентами.
