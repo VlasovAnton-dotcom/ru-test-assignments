@@ -1,0 +1,130 @@
+Решение задачи - Vlasov - 24-09-2026
+Выполнено - 23-09-26 в 10/19 + 
+VLASOV – 23-09-26 – Решение Черн
+Решение задачи
+1. Структура проекта
+•	React + TypeScript для фронтенда
+•	Infinite Loader для подгрузки данных
+•	React Hook Form для валидации и управления формой
+•	Framer Motion для анимации
+•	JSON Server для имитации API
+2. Основные компоненты
+•	TableComponent: отображает таблицу и управляет загрузкой данных
+•	FormComponent: форма для создания новой записи
+•	App.tsx: главный компонент, объединяющий все части
+3. Реализация
+package.json
+json
+{
+  "name": "react-typescript-app",
+  "version": "1.0.0",
+  "scripts": {
+    "start": "react-scripts start",
+    "build": "react-scripts build",
+    "test": "jest",
+    "deploy": "gh-pages -d build"
+  },
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-scripts": "^5.0.1",
+    "framer-motion": "^7.4.1",
+    "react-hook-form": "^7.38.2",
+    "json-server": "^0.16.3"
+  },
+  "devDependencies": {
+    "typescript": "^4.9.5",
+    "@types/react": "^18.2.4",
+    "@types/react-dom": "^18.2.4",
+    "@testing-library/react": "^13.4.0",
+    "jest": "^29.5.0",
+    "gh-pages": "^4.0.0"
+  }
+}
+App.tsx
+typescript
+import React, { useEffect } from 'react';
+import TableComponent from './components/TableComponent';
+import FormComponent from './components/FormComponent';
+import { fetchData } from './services/dataService';
+
+const App: React.FC = () => {
+  const [data, setData] = React.useState([]);
+  const [isLoading, setIsLoading] = React.useState(true);
+
+  useEffect(() => {
+    fetchData().then(response => {
+      setData(response.data);
+      setIsLoading(false);
+    });
+  }, []);
+
+  return (
+    <div>
+      <h1>Таблица данных</h1>
+      <TableComponent data={data} isLoading={isLoading} />
+      <FormComponent onSubmit={/* ваша логика отправки */} />
+    </div>
+  );
+};
+
+export default App;
+TableComponent.tsx
+typescript
+import React from 'react';
+import { useInfiniteQuery } from 'react-query';
+
+const TableComponent = ({ data, isLoading }) => {
+  const { isFetching, data: tableData, fetchMore } = useInfiniteQuery(
+    'data',
+    () => fetchData(),
+    {
+      fetchPolicy: 'cache-and-network',
+    }
+  );
+
+  return (
+    <table>
+      {/* ваша реализация таблицы */}
+    </table>
+  );
+};
+
+export default TableComponent;
+FormComponent.tsx
+typescript
+import React, { useForm } from 'react';
+import { useToast } from 'react-toastify';
+
+const FormComponent = () => {
+  const { register, handleSubmit, formState: { isSubmitting } } = useForm();
+  const [showForm, setShowForm] = React.useState(false);
+
+  const onSubmit = async (data) => {
+    // логика отправки данных
+  };
+
+  return (
+    <div>
+      {/* ваша форма с использованием register */}
+      <button onClick={handleSubmit(onSubmit)} disabled={isSubmitting}>
+        Отправить
+      </button>
+    </div>
+  );
+};
+
+export default FormComponent;
+4. Анимация
+Используйте Framer Motion для анимации:
+typescript
+import { motion } from 'framer-motion';
+
+const Popup = () => {
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: 0.5 }}
+
