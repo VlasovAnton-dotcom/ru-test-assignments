@@ -1,0 +1,247 @@
+Другие - pammer - 25-09-2026
+Vlasov +
+### Тестовое задание для стажёра-тестировщика на знание Java и SQL
+
+Репозиторий с решением необходимо создать путем форкинга исходного репозитория и размещения собственных изменений в нем. Затем отправить ссылку на созданный вами форк.
+
+### Порядок выполнения заданий:
+
+#### Задание 1:
+Исправьте класс `WithProblemsTests.java`, чтобы проект скомпилировался и все тесты прошли успешно.
+
+#### Задание 2:
+В классе `ReadFileTests.java` прочтите содержимое файла `ReadFileTests.txt`. Убедитесь, что вторая строка содержит слово «аллоха».
+
+#### Задание 3:
+Напишите SQL-запрос, который считает долю заказов с промокодами (соотношение заказов с промокодами к общему числу заказов). Запрос сохранить в файле `resources/Task3.sql`.
+
+#### Задание 4:
+Определите XPath и CSS-селекторы для кнопки-стрелки на странице Яндекс (https://ya.ru). Результат записать в файл `resources/Task4.txt`.
+
+#### Задание 5* (сложное):
+Реализуйте иерархию классов, демонстрируя принципы ООП. Продемонстрируйте роботов разного назначения и видов топлива, покажите их функциональность и заправку.
+
+---
+
+### Пример решения:
+
+#### 1. Исправление класса `WithProblemsTests.java`
+
+```java
+import org.junit.jupiter.api.Test;
+import java.util.Arrays;
+import java.util.List;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+
+public class WithProblemsTests {
+
+    @Test
+    public void testSum() {
+        List<Integer> numbers = Arrays.asList(1, 2, 3, 4, 5);
+        int actualSum = numbers.stream().mapToInt(Integer::intValue).sum(); // Исправлено суммирование
+        assertEquals(15, actualSum);
+    }
+
+    @Test
+    public void testMax() {
+        List<Integer> numbers = Arrays.asList(-1, 0, 1, 2, 3);
+        int actualMax = numbers.stream().mapToInt(Integer::intValue).max().orElseThrow(); // Исправлено получение максимума
+        assertEquals(3, actualMax);
+    }
+
+    @Test
+    public void testMin() {
+        List<Integer> numbers = Arrays.asList(-1, 0, 1, 2, 3);
+        int actualMin = numbers.stream().mapToInt(Integer::intValue).min().orElseThrow(); // Исправлено получение минимума
+        assertEquals(-1, actualMin);
+    }
+
+    @Test
+    public void testFilterEvenNumbers() {
+        List<Integer> numbers = Arrays.asList(1, 2, 3, 4, 5);
+        List<Integer> filtered = numbers.stream().filter(num -> num % 2 == 0).toList(); // Исправлено фильтрование
+        assertEquals(Arrays.asList(2, 4), filtered);
+    }
+
+    @Test
+    public void testMapMultiplyTwo() {
+        List<Integer> numbers = Arrays.asList(1, 2, 3, 4, 5);
+        List<Integer> mapped = numbers.stream().map(num -> num * 2).toList(); // Исправлено умножение
+        assertEquals(Arrays.asList(2, 4, 6, 8, 10), mapped);
+    }
+}
+```
+
+#### 2. Класс `ReadFileTests.java`
+
+```java
+import org.junit.jupiter.api.Test;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import java.util.List;
+import static org.junit.jupiter.api.Assertions.*;
+
+public class ReadFileTests {
+
+    @Test
+    public void checkSecondLineContainsWordAlloha() throws Exception {
+        Path path = Paths.get(getClass().getResource("/ReadFileTests.txt").toURI());
+        List<String> lines = Files.readAllLines(path);
+        assertTrue(lines.size() >= 2, "Файл должен иметь минимум две строки");
+        assertTrue(lines.get(1).contains("аллоха"), "Вторая строка должна содержать слово \"аллоха\"");
+    }
+}
+```
+
+#### 3. SQL-запрос для подсчета доли заказов с промокодами
+
+```sql
+-- resources/Task3.sql
+WITH TotalOrders AS (
+    SELECT COUNT(*) AS total_orders FROM orders
+),
+PromoOrders AS (
+    SELECT COUNT(*) AS promo_orders FROM orders WHERE promocode_id IS NOT NULL
+)
+SELECT ROUND(CAST(promo_orders AS FLOAT)/total_orders * 100, 2) AS percentage
+FROM TotalOrders, PromoOrders;
+```
+
+#### 4. Определение селекторов для кнопки-стрелки на yandex.ru
+
+```text
+XPath: //a[@aria-label="Назад"]/span
+CSS Selector: a[aria-label="Назад"] span
+```
+
+#### 5*. Реализация иерархии классов с демонстрацией принципов ООП
+
+```java
+// Абстрактный класс Robot
+abstract class Robot {
+    private final EnergyType energyType;
+    private double fuelLevel;
+
+    public Robot(EnergyType energyType) {
+        this.energyType = energyType;
+        this.fuelLevel = 100.0; // начальный заряд
+    }
+
+    public abstract void work();
+
+    public void refillFuel() {
+        System.out.println("Заправляю робота...");
+        energyType.refill(this);
+    }
+
+    public double getFuelLevel() {
+        return fuelLevel;
+    }
+
+    public void setFuelLevel(double level) {
+        this.fuelLevel = level;
+    }
+}
+
+enum EnergyType {
+    ATOMIC {
+        @Override
+        public void refill(Robot robot) {
+            System.out.println("Заряжаю атомным реактором каждые 50 лет.");
+            robot.setFuelLevel(100.0);
+        }
+    },
+    INTERNAL_COMBUSTION {
+        @Override
+        public void refill(Robot robot) {
+            System.out.println("Заправляю бензином/дизелем по мере опустошения бака.");
+            robot.setFuelLevel(robot.getFuelLevel() + 50.0);
+        }
+    },
+    ELECTRIC {
+        @Override
+        public void refill(Robot robot) {
+            System.out.println("Заряжаюсь электричеством при уровне заряда ниже 20%.");
+            robot.setFuelLevel(100.0);
+        }
+    };
+
+    public abstract void refill(Robot robot);
+}
+
+// Конкретные виды роботов
+class BattleRobot extends Robot {
+    public BattleRobot(EnergyType energyType) {
+        super(energyType);
+    }
+
+    @Override
+    public void work() {
+        System.out.println("Стреляю из оружия!");
+    }
+}
+
+class WelderRobot extends Robot {
+    public WelderRobot(EnergyType energyType) {
+        super(energyType);
+    }
+
+    @Override
+    public void work() {
+        System.out.println("Свариваю деталь!");
+    }
+}
+
+class CookingRobot extends Robot {
+    public CookingRobot(EnergyType energyType) {
+        super(energyType);
+    }
+
+    @Override
+    public void work() {
+        System.out.println("Готовлю еду!");
+    }
+}
+
+// Демонстрация работы роботов
+public class RobotsDemo {
+    public static void main(String[] args) {
+        Robot battleAtomic = new BattleRobot(EnergyType.ATOMIC);
+        Robot welderElectric = new WelderRobot(EnergyType.ELECTRIC);
+        Robot cookDiesel = new CookingRobot(EnergyType.INTERNAL_COMBUSTION);
+
+        // Положительная проверка
+        battleAtomic.work(); // Стрельба
+        battleAtomic.refillFuel(); // Зарядка атомной энергией
+
+        welderElectric.work(); // Сварка
+        welderElectric.refillFuel(); // Электрозаправка
+
+        cookDiesel.work(); // Готовка еды
+        cookDiesel.refillFuel(); // Топливозаправка дизельным двигателем
+
+        // Негативная проверка
+        // Попытка заправить боевого робота электрическим способом
+        battleAtomic.setEnergyType(EnergyType.ELECTRIC);
+        battleAtomic.refillFuel(); // Должно вызвать неправильное действие
+    }
+}
+
+// Метод установки неправильного типа энергии
+class Robot {
+    //...
+    public void setEnergyType(EnergyType newType) {
+        this.energyType = newType;
+    }
+}
+```
+
+---
+
+### Итог:
+
+- Исправил класс `WithProblemsTests.java`, добавил тесты чтения файла и SQL-запрос.
+- Определил селекторы для кнопки-стрелки на Yandex.
+- Реализовал иерархию классов роботов с разными видами топлива и назначением, продемонстрировал принципы ООП.
+
+Ссылку на форкнутый репозиторий с решением пришлите рекрутеру.
