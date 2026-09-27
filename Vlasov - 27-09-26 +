@@ -1,0 +1,386 @@
+Решение задачи - Ручной контроль качества - Часть№2
+Решение задачи - 18-09-26
+Ниже представлена архитектурная реализация описанного сценария на Ruby on Rails. Решение разбито на логические блоки: модель данных, бизнес-логика (сервисы), контроллеры и тесты.
+1. Модели и миграции
+Миграция для модели Import:
+ruby
+# db/migrate/202310270001_create_imports.rb
+class CreateImports < ActiveRecord::Migration[7.1]
+  def change
+    create_table :imports do |t|
+      t.string :name, null: false
+      t.integer :status, default: 0 # enum: created, started, completed, failed
+      t.datetime :started_at
+      t.datetime :completed_at
+      t.integer :total_rows, default: 0
+      t.integer :success_count, default: 0
+      t.integer :failure_count, default: 0
+      t.float :progress_percentage, default: 0.0
+
+      t.timestamps
+    end
+  end
+end
+Миграция для хранения ошибок валидации (опционально, но рекомендуется):
+ruby
+# db/migrate/202310270002_create_import_errors.rb
+class CreateImportErrors < ActiveRecord::Migration[7.1]
+  def change
+    create_table :import_errors do |t|
+      t.references :import, null: false, foreign_key: true
+      t.integer :row_number
+      t.text :error_messages
+      t.jsonb :raw_data
+
+      t.timestamps
+    end
+  end
+end
+Модель Import с перечислением (enum) статусов:
+ruby
+# app/models/import.rb
+class Import < ApplicationRecord
+  has_many :import_errors, dependent: :destroy
+  has_one_attached :csv_file
+
+  validates :name, presence: true
+  validates :csv_file, attached: true, content_type: ['text/csv', 'application/vnd.ms-excel']
+
+  enum status: { created: 0, started: 1, completed: 2, failed: 3 }
+
+  scope :recent, -> { order(created_at: :desc) }
+end
+Валидация клиента (через сервис или PORO — Plain Old Ruby Object): Поскольку клиенты не сохраняются как отдельная таблица в рамках этого задания (важно только количество созданных), логика валидации выносится в отдельный класс:
+ruby
+# app/services/client_validator.rb
+class ClientValidator
+  attr_reader :errors
+
+  REQUIRED_FIELDS = %w[first_name last_name email date_of_birth].freeze
+
+  def initialize(row)
+    @data = row.to_h.transform_keys(&:strip).transform_values(&:strip)
+    @errors = []
+  end
+
+  def valid?
+    check_required_fields
+    validate_names
+    validate_email
+    validate_age
+    errors.empty?
+  end
+
+  private
+
+  def check_required_fields
+    REQUIRED_FIELDS.each do |field|
+      errors << "#{field.humanize} is missing" if @data[field].blank?
+    end
+  end
+
+  def validate_names
+    %w[first_name last_name].each do |name_field|
+      next if @data[name_field].blank?
+      errors << "#{name_field.humanize} must be at least 2 characters long" if @data[name_field].length < 2
+    end
+  end
+
+  def validate_email
+    return if @data['email'].blank?
+    unless URI::MailTo::EMAIL_REGEXP.match?(@data['email'])
+      errors << "Email format is invalid"
+    end
+  end
+
+  def validate_age
+    return if @data['date_of_birth'].blank?
+    
+    dob = Date.parse(@data['date_of_birth']) rescue nil
+    if dob.nil?
+      errors << "Date of birth is invalid"
+    else
+      age = ((Time.current - dob.to_time) / 1.year.seconds).floor
+      errors << "Client must be older than 18 and younger than 100" unless age.between?(18, 99)
+    end
+  end
+end
+2. Бизнес-логика (Service Objects)
+Обработка больших файлов (до 100 000 строк) блокирующими методами приведет к таймауту веб-процесса. Поэтому обработка должна быть вынесена в фоновый Job.
+Сервис создания импорта:
+ruby
+# app/services/imports/create_service.rb
+class Imports::CreateService
+  def initialize(import_params)
+    @params = import_params
+  end
+
+  def call
+    import = Import.new(name: @params[:name])
+    import.csv_file.attach(@params[:csv_file])
+    import.save ? import : raise(ActiveRecord::RecordInvalid, import)
+  end
+end
+Фоновый обработчик (Background Job): Для обработки огромных CSV-файлов используется гем smarter_csv (для потокового чтения без загрузки всей памяти) и Sidekiq.
+ruby
+# app/jobs/process_import_job.rb
+require 'smarter_csv'
+
+class ProcessImportJob < ApplicationJob
+  queue_as :default
+
+  def perform(import_id)
+    import = Import.find(import_id)
+    import.update!(status: :started, started_at: Time.current)
+
+    file_path = ActiveStorage::Blob.service.path_for(import.csv_file.key)
+    
+    options = {
+      chunk_size: 500,
+      user_provided_headers: %w[first_name last_name email date_of_birth],
+      downcase_header: true
+    }
+
+    SmarterCSV.process(file_path, options) do |chunk|
+      process_chunk(chunk, import)
+      
+      # Обновляем прогресс каждые N строк
+      percentage = (import.success_count + import.failure_count).to_f / import.total_rows * 100
+      import.update(progress_percentage: percentage)
+    end
+
+    import.update!(
+      status: :completed,
+      completed_at: Time.current,
+      progress_percentage: 100.0
+    )
+  rescue StandardError => e
+    import.update(status: :failed, completed_at: Time.current)
+    Rails.logger.error "Import ##{import.id} failed: #{e.message}"
+  end
+
+  private
+
+  def process_chunk(chunk, import)
+    chunk.each_with_index do |row, index|
+      validator = ClientValidator.new(row)
+      global_row_number = import.success_count + import.failure_count + index + 1
+
+      if validator.valid?
+        # Здесь может быть создание реальной записи Customer.create!
+        import.increment!(:success_count)
+      else
+        import.increment!(:failure_count)
+        import.import_errors.create(
+          row_number: global_row_number,
+          error_messages: validator.errors.join(', '),
+          raw_data: row
+        )
+      end
+    end
+  end
+end
+Примечание по обработке: Если файл содержит миллионные строки, вместо обновления БД на каждой итерации можно использовать Redis-счетчики для прогресса, а итоговые числа записывать в базу раз в несколько секунд, чтобы избежать блокировки таблицы.
+3. Контроллеры
+ImportsController:
+ruby
+# app/controllers/imports_controller.rb
+class ImportsController < ApplicationController
+  before_action :set_import, only: %i[show destroy start]
+
+  def index
+    @imports = Import.recent.page(params[:page])
+  end
+
+  def new
+    @import = Import.new
+  end
+
+  def create
+    service = Imports::CreateService.new(import_params)
+    @import = service.call
+    redirect_to @import, notice: 'Import was successfully created.'
+  rescue ActiveRecord::RecordInvalid
+    render :new, status: :unprocessable_entity
+  end
+
+  def show; end
+
+  def destroy
+    @import.destroy
+    redirect_to imports_url, notice: 'Import was successfully destroyed.'
+  end
+
+  def start
+    ProcessImportJob.perform_later(@import.id)
+    redirect_to @import, notice: 'Import processing has been started.'
+  end
+
+  private
+
+  def set_import
+    @import = Import.find(params[:id])
+  end
+
+  def import_params
+    params.require(:import).permit(:name, :csv_file)
+  end
+end
+4. Вьюхи (ERB + Tailwind CSS для быстрого UI)
+Библиотека UI выбрана произвольно (TailwindCSS) согласно требованиям.
+index.html.erb (Главная страница со списком импортов):
+erb
+<div class="container mx-auto p-4">
+  <div class="flex justify-between items-center mb-6">
+    <h1 class="text-2xl font-bold">Список импортов</h1>
+    <%= link_to 'Добавить новый импорт', new_import_path, class: "bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700" %>
+  </div>
+
+  <table class="min-w-full border-collapse">
+    <thead class="bg-gray-50">
+      <tr>
+        <th class="border px-4 py-2">Название</th>
+        <th class="border px-4 py-2">Статус</th>
+        <th class="border px-4 py-2">Создано</th>
+        <th class="border px-4 py-2">Действия</th>
+      </tr>
+    </thead>
+    <tbody>
+      <% @imports.each do |imp| %>
+        <tr class="<%= cycle('bg-white', 'bg-gray-50') %>">
+          <td class="border px-4 py-2"><%= link_to imp.name, imp %></td>
+          <td class="border px-4 py-2 capitalize"><%= imp.status %></td>
+          <td class="border px-4 py-2"><%= time_ago_in_words(imp.created_at) %> ago</td>
+          <td class="border px-4 py-2 space-x-2">
+            <%= button_to 'Удалить', imp, method: :delete, data: { turbo_confirm: 'Are you sure?' }, class: "text-red-600 underline" %>
+          </td>
+        </tr>
+      <% end %>
+    </tbody>
+  </table>
+  
+  <div class="mt-4">
+    <%= paginate @imports %>
+  </div>
+</div>
+show.html.erb (Страница информации об импорте):
+erb
+<div class="container mx-auto p-4">
+  <h1 class="text-2xl font-bold mb-4">Импорт: <%= @import.name %></h1>
+
+  <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+    <div class="p-4 bg-white shadow rounded">
+      <div class="text-sm text-gray-500">Статус</div>
+      <div class="font-semibold capitalize"><%= @import.status %></div>
+    </div>
+    <div class="p-4 bg-white shadow rounded">
+      <div class="text-sm text-gray-500">Успешно создано</div>
+      <div class="font-semibold"><%= @import.success_count %></div>
+    </div>
+    <div class="p-4 bg-white shadow rounded">
+      <div class="text-sm text-gray-500">Ошибки</div>
+      <div class="font-semibold text-red-600"><%= @import.failure_count %></div>
+    </div>
+    <div class="p-4 bg-white shadow rounded">
+      <div class="text-sm text-gray-500">Прогресс</div>
+      <div class="font-semibold"><%= number_with_precision(@import.progress_percentage, precision: 2) %>%</div>
+    </div>
+  </div>
+
+  <% if @import.created? %>
+    <%= button_to 'Начать импорт', start_import_path(@import), method: :post, class: "bg-green-600 text-white px-4 py-2 rounded" %>
+  <% elsif @import.started? %>
+    <button class="bg-gray-400 text-white px-4 py-2 rounded cursor-not-allowed" disabled>Идет обработка...</button>
+  <% end %>
+
+  <% if @import.completed? || @import.failed? %>
+    <div class="mt-8">
+      <h2 class="text-xl font-bold mb-2">Ошибки валидации</h2>
+      <% if @import.import_errors.any? %>
+        <table class="min-w-full">
+          <thead><tr><th class="border px-2 py-1 text-left">Строка</th><th class="border px-2 py-1 text-left">Данные</th><th class="border px-2 py-1 text-left">Ошибка</th></tr></thead>
+          <tbody>
+            <% @import.import_errors.first(20).each do |err| %>
+              <tr><td class="border px-2 py-1"><%= err.row_number %></td><td class="border px-2 py-1"><%= err.raw_data.slice('first_name', 'email').inspect %></td><td class="border px-2 py-1 text-red-600"><%= err.error_messages %></td></tr>
+            <% end %>
+          </tbody>
+        </table>
+        <% if @import.import_errors.count > 20 %>
+          <div class="text-sm mt-2">Показаны первые 20 ошибок из <%= @import.import_errors.count %></div>
+        <% end %>
+      <% else %>
+        <p>Ошибок нет.</p>
+      <% end %>
+    </div>
+  <% end %>
+</div>
+5. Тесты (RSpec)
+Требуется покрыть тестами сценарии работы с маленькими (500 строк) и большими (100 000 строк) файлами.
+Спецификация сервиса создания:
+ruby
+# spec/services/imports/create_service_spec.rb
+require 'rails_helper'
+
+RSpec.describe Imports::CreateService do
+  subject { described_class.new(params) }
+  let(:file) { fixture_file_upload('files/small_test.csv', 'text/csv') }
+  let(:params) { { name: 'Test Import', csv_file: file } }
+
+  it 'creates a new import record' do
+    result = subject.call
+    expect(result).to be_persisted
+    expect(result.name).to eq('Test Import')
+    expect(result.csv_file).to be_attached
+  end
+
+  context 'when file is missing' do
+    let(:params) { { name: 'Test Import' } }
+    it { expect { subject.call }.to raise_error(ActiveRecord::RecordInvalid) }
+  end
+end
+Спецификация фонового джоба (ключевой тест производительности):
+ruby
+# spec/jobs/process_import_job_spec.rb
+require 'rails_helper'
+
+RSpec.describe ProcessImportJob, type: :job do
+  include ActiveJob::TestHelper
+
+  let(:import) { create(:import, :with_small_csv) } # FactoryBot trait attaching test file
+
+  around do |example|
+    perform_enqueued_jobs { example.run }
+  end
+
+  it 'processes the file and updates counts' do
+    expect { 
+      described_class.perform_now(import.id) 
+    }.to change { import.reload.success_count }.by(500) # Ожидаемое кол-во валидных строк
+     .and change { import.reload.failure_count }.by(0)
+     .and change { import.reload.status }.from('created').to('completed')
+  end
+
+  context 'with validation errors' do
+    let(:import) { create(:import, :with_invalid_csv) }
+    it 'counts failures correctly' do
+      described_class.perform_now(import.id)
+      expect(import.reload.failure_count).to be > 0
+      expect(import.import_errors.count).to be > 0
+    end
+  end
+
+  context 'performance with large files' do
+    let(:import) { create(:import, :with_large_csv) } # Файл на 100_000 строк
+    
+    it 'completes within reasonable memory limits' do
+      initial_memory = `ps -o rss= -p #{Process.pid}`.to_i
+      described_class.perform_now(import.id)
+      final_memory = `ps -o rss= -p #{Process.pid}`.to_i
+      
+      expect(import.reload.status).to eq('completed')
+      # Проверка, что процесс не съел всю память (например, рост менее 200 МБ)
+      expect(final_memory - initial_memory).to be < 200_000 
+    end
+  end
+end
+Рекомендация по настройке окружения: Для локальной разработки и тестирования таких сценариев обязательно используйте адаптер асинхронной очереди: config.active_job.queue_adapter = :async А для production-развертывания потребуется установка Redis и воркеров Sidekiq, так как обработка файла на 100 000 записей займет значительное время и точно превысит лимит времени ответа HTTP-запроса. Также необходимо настроить жизненный цикл прикрепленных файлов (Active Storage), например, политику удаления через 30 дней после завершения импорта.
