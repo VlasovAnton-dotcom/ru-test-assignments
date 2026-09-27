@@ -1,0 +1,112 @@
+Решение  задачи - Время охраны. Материал обработан и подготовлен 25-09-26 в 10-30
+Ниже представлена архитектура и план реализации решения для работы с KSI-контейнерами. Проект разделен на два модуля согласно шаблону: container-library (ядро) и end-user-application (демонстрация использования).
+1. Структура проекта Maven (Multi-module)
+xmlКопировать
+<modules>
+    <module>container-library</module>
+    <module>end-user-application</module>
+</modules>
+•	container-library: Содержит API (Container, ContainerBuilder, SignatureManager) и реализацию.
+•	end-user-application: CLI или простой GUI, использующий библиотеку для демонстрации всех функциональных требований.
+2. Модуль container-library
+Пакетная структура
+•	com.example.container.api — публичные интерфейсы.
+•	com.example.container.impl — внутренняя реализация.
+•	com.example.container.tlv — парсинг и сборка манифестов.
+•	com.example.container.exception — иерархия исключений.
+Ключевые классы API
+Интерфейс Container.java:
+javaКопировать
+/**
+ * Represents a signed data container based on ZIP format.
+ */
+public interface Container extends Closeable {
+    /**
+     * Returns unmodifiable list of data file entries inside the container.
+     */
+    List<DataFileEntry> getDataFiles();
+
+    /**
+     * Returns unmodifiable list of signatures currently stored in the container.
+     */
+    List<KsiSignature> getSignatures();
+
+    /**
+     * Adds a new signature with its corresponding manifest to the open container.
+     */
+    void addSignature(Manifest manifest, KsiSignature signature) throws IOException;
+
+    /**
+     * Removes signature by its index or identifier.
+     */
+    void removeSignature(int signatureIndex) throws IOException;
+
+    /**
+     * Persists changes to disk if container was opened in read-write mode.
+     */
+    void commit() throws IOException;
+}
+Работа с большими файлами и производительностью
+Для соблюдения требования о работе с файлами 2–3 ГБ и 10 000 входных файлов:
+1.	Потоковая обработка Zip: Используется ZipOutputStream в связке с буферизацией (BufferedOutputStream), но сами данные файлов читаются из InputStream кусками (например, по 8 КБ) без полной загрузки в память.
+2.	Отложенная запись подписей: При создании контейнера сначала записываются все файлы данных, а записи /META-INF/ добавляются только после успешного вычисления хешей и получения подписи от Gateway.
+3.	Манифесты в памяти: Для 10 000 файлов TLV-структура манифеста может занять значительный объем RAM. Рекомендуется использовать потоковую генерацию TLV прямо в OutputStream архива, не храня полную XML/JSON-представление в строках.
+4.	Кодировки: Имена файлов внутри ZIP хранятся как UTF-8 (используется флаг EFS — Extra Field Streaming или настройка флага совместимости в ZipOutputStream).
+Формат Manifest (TLV)
+Вместо сторонних TLV-библиарий используется минималистичная собственная реализация на базе ByteBuffer. Структура тега (пример):
+•	T (Tag): 1 байт (например, 0x01 для DataFile, 0x02 для SignatureUri).
+•	L (Length): 4 байта (Integer, big-endian). Позволяет описывать блоки до 4 ГБ.
+•	V (Value): Тело.
+Пример вложенности для одного файла в манифесте: [Tag: FileRecord][Len][ [Tag: URI][Len][datafile1.txt] [Tag: HashAlgo][Len][SHA-256] [Tag: Hash][Len][32bytes] ]
+3. Интеграция с KSI Java SDK
+Так как доступ к конкретному репозиторию KSI ограничен, интеграция строится на основе стандартной документации Guardtime KSI SDK:
+1.	Зависимость: В pom.xml добавляется библиотека ksi-sdk-java.
+2.	Конфигурация клиента: Класс KsiClientFactory. Настройка URL Gateway, порта и опционально сертификатов TLS из .properties файла.
+3.	Процесс подписания:
+o	Для каждого файла в контейнере вычисляется хеш (в потоке, чтобы не держать файл в памяти).
+o	Создается объект DocumentHash (или аналог в SDK), содержащий алгоритм и байты хеша.
+o	Хеши агрегируются через AggregationRequest к Gateway.
+o	Полученный агрегированный хеш расширяется (ExtendRequest) до текущего календарного хеша (для обеспечения долгосрочной верификации).
+o	Итоговый объект KsiSignature сериализуется через signature.getEncoded() и кладется в /META-INF/signatureN.ksi.
+o	Составленный список хешей и путей сохраняется в manifestN.tlv.
+4. Изоляция хранения
+Библиотека никогда не оставляет временные файлы с данными пользователя в открытом виде во временных папках ОС. Все промежуточные потоки работают либо через ByteArrayOutputStream (если размер блока позволяет, например, для чанков TLV), либо напрямую перекачивают байты из исходного потока в ZipOutputStream.
+5. Модуль end-user-application
+Простое консольное приложение (Main.java), реализующее команды:
+•	create --input dir1/file1.txt dir2/file2.pdf --output out.kc — создание нового контейнера.
+•	open --input existing.kc — просмотр содержимого.
+•	sign --input existing.kc — вызов KSI Gateway, расчет манифеста, добавление новой пары manifest+signature.
+•	verify --input existing.kc — проверка целостности: пересчет хешей файлов, сравнение с манифестом, проверка подписи через публичный ключ KSI.
+6. Тестирование
+•	Модульные тесты (JUnit 5): Проверка логики сборки TLV, корректности расчета хешей, работы утилитных классов.
+•	**Интеграционные тесты (Testcontainers): 
+o	Поднятие реального KSI Sandbox Gateway (если доступен публично) или мокирование HTTP-слоя SDK. 
+o	Создание временного контейнера на 1000 мелких файлов, замер времени выполнения и потребления RAM (через JOL или встроенные средства JVM).
+o	Попытка удаления единственной подписи (проверка бизнес-правила валидности контейнера).
+•	Тесты граничных условий: Передача файла с именем в 250 символов, передача директории вместо файла, обрыв сети во время запроса к Gateway.
+7. Руководство пользователя (USER_GUIDE.md)
+Документация должна содержать:
+1.	Требования: Java 11+, Git.
+2.	Сборка: mvn clean package. Сборка создаст исполняемый "fat-jar" в модуле end-user-application.
+3.	Настройка: Описание файла ksi-client.properties (URL Gateway: https://demo.guardtime.net/gt-signingservice для публичных примеров).
+4.	Примеры командной строки:
+bashКопировать
+# Создание контейнера
+java -jar end-user-app.jar create -i ./docs/license.pdf -i ./src/main/java -o my_container.kc
+
+# Добавление подписи
+java -jar end-user-app.jar sign -i my_container.kc
+
+# Просмотр структуры
+java -jar end-user-app.jar list -i my_container.kc
+5.	Описание формата манифеста: Справочная информация для разработчиков, которые захотят реализовать чтение этого контейнера на других языках.
+8. Управление зависимостями и .git
+В финальную поставку включается корневая директория репозитория со скрытым каталогом .git. История коммитов должна отражать этапы разработки:
+1.	Настройка Maven и базового API.
+2.	Реализация ZIP-потоков и прототипа манифеста.
+3.	Интеграция KSI SDK и работа с сетью.
+4.	Оптимизация под большие файлы (streaming).
+5.	Написание тестов и документация.
+Использование сторонних библиотек сведено к минимуму: Maven (управление билдом), JUnit + AssertJ (тесты), Guava (опционально, для удобной работы с хешами HashingInputStream, если это разрешено правилами TCK, иначе — чистый JDK) и сам KSI SDK. Библиотеки вроде Apache Commons Compress запрещены, так как функционал ZIP полностью покрывается стандартным java.util.zip начиная с Java 6, а управление памятью там проще контролировать вручную.
+
+
