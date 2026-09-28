@@ -1,0 +1,398 @@
+Решение задачи - Vlasov - 28-09-26 +
+Ниже представлена архитектура и базовая реализация тестового задания. 
+Для выполнения требования «приложение должно собираться без установки или настройки каких-либо дополнительных компонент» в качестве СУБД выбран SQLite. Это легковесная база данных, которая работает из коробки с .NET (через стандартный провайдер Microsoft.Data.Sqlite) и не требует отдельного сервера.
+1. Структура проекта
+Архив с решением должен иметь следующую структуру:
+Копировать
+/EmployeeManager/
+├── EmployeeManager.sln                  # Файл решения Visual Studio
+├── README.txt                           # Инструкция по запуску
+├── App.config                           # Строка подключения к БД
+└── /EmployeeManager.WinForms/           # Проект WinForms (.NET 6.0+)
+    ├── Program.cs                       # Точка входа
+    ├── Models/
+    │   └── Employee.cs                  # Модель сотрудника
+    ├── Data/
+    │   └── EmployeeRepository.cs        # Класс для работы с SQLite
+    ├── Forms/
+    │   ├── MainForm.cs                  # Главная форма: список сотрудников
+    │   └── EmployeeForm.cs              # Форма создания/редактирования
+    └── Resources/                       # Папка ресурсов (опционально, для иконок)
+2. Модель данных (Models/Employee.cs)
+csharp
+using System;
+
+namespace EmployeeManager.Models
+{
+    /// <summary>
+    /// Представляет данные одного сотрудника.
+    /// </summary>
+    public class Employee
+    {
+        public int Id { get; set; } // Первичный ключ базы данных
+        public string FirstName { get; set; }
+        public string LastName { get; set; }
+        public string Patronymic { get; set; }
+        public DateTime BirthDate { get; set; }
+        public string Address { get; set; }
+        public string Department { get; set; }
+        public string About { get; set; }
+    }
+}
+3. Репозиторий для работы с базой данных (Data/EmployeeRepository.cs)
+Класс инкапсулирует все SQL-запросы. Использует асинхронные методы для отзывчивости интерфейса.
+csharp
+using Microsoft.Data.Sqlite;
+using EmployeeManager.Models;
+using System.Collections.Generic;
+using System.Threading.Tasks;
+
+namespace EmployeeManager.Data
+{
+    public class EmployeeRepository
+    {
+        private readonly string _connectionString;
+
+        public EmployeeRepository(string connectionString)
+        {
+            _connectionString = connectionString;
+            InitializeDatabase().Wait(); // Инициализируем БД при создании репозитория
+        }
+
+        // Создает таблицу Employees, если её еще нет
+        private async Task InitializeDatabase()
+        {
+            using var connection = new SqliteConnection(_connectionString);
+            await connection.OpenAsync();
+            var command = connection.CreateCommand();
+            command.CommandText = @"
+                CREATE TABLE IF NOT EXISTS Employees (
+                    Id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    FirstName TEXT NOT NULL,
+                    LastName TEXT NOT NULL,
+                    Patronymic TEXT,
+                    BirthDate TEXT NOT NULL,
+                    Address TEXT,
+                    Department TEXT,
+                    About TEXT
+                );";
+            await command.ExecuteNonQueryAsync();
+        }
+
+        public async Task<List<Employee>> GetAllAsync()
+        {
+            var employees = new List<Employee>();
+            using var connection = new SqliteConnection(_connectionString);
+            await connection.OpenAsync();
+            using var command = new SqliteCommand("SELECT * FROM Employees ORDER BY LastName", connection);
+            using var reader = await command.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+            {
+                employees.Add(MapToEmployee(reader));
+            }
+            return employees;
+        }
+
+        public async Task<Employee> GetByIdAsync(int id)
+        {
+            using var connection = new SqliteConnection(_connectionString);
+            await connection.OpenAsync();
+            using var command = new SqliteCommand("SELECT * FROM Employees WHERE Id = $id", connection);
+            command.Parameters.AddWithValue("$id", id);
+            using var reader = await command.ExecuteReaderAsync();
+            if (await reader.ReadAsync())
+            {
+                return MapToEmployee(reader);
+            }
+            return null;
+        }
+
+        public async Task<int> CreateAsync(Employee employee)
+        {
+            using var connection = new SqliteConnection(_connectionString);
+            await connection.OpenAsync();
+            using var command = new SqliteCommand(@"
+                INSERT INTO Employees (FirstName, LastName, Patronymic, BirthDate, Address, Department, About) 
+                VALUES ($fn, $ln, $pt, $bd, $ad, $dep, $ab);", connection);
+            
+            AddParameters(command, employee);
+            await command.ExecuteNonQueryAsync();
+            
+            // Возвращаем ID последней вставленной записи
+            long lastRowId = connection.LastInsertRowId;
+            return (int)lastRowId;
+        }
+
+        public async Task UpdateAsync(Employee employee)
+        {
+            using var connection = new SqliteConnection(_connectionString);
+            await connection.OpenAsync();
+            using var command = new SqliteCommand(@"
+                UPDATE Employees 
+                SET FirstName=$fn, LastName=$ln, Patronymic=$pt, BirthDate=$bd, Address=$ad, Department=$dep, About=$ab
+                WHERE Id=$id;", connection);
+            
+            AddParameters(command, employee);
+            command.Parameters.AddWithValue("$id", employee.Id);
+            await command.ExecuteNonQueryAsync();
+        }
+
+        public async Task DeleteAsync(int id)
+        {
+            using var connection = new SqliteConnection(_connectionString);
+            await connection.OpenAsync();
+            using var command = new SqliteCommand("DELETE FROM Employees WHERE Id = $id", connection);
+            command.Parameters.AddWithValue("$id", id);
+            await command.ExecuteNonQueryAsync();
+        }
+
+        private static Employee MapToEmployee(SqliteDataReader reader)
+        {
+            return new Employee
+            {
+                Id = reader.GetInt32(0),
+                FirstName = reader.GetString(1),
+                LastName = reader.GetString(2),
+                Patronymic = reader.IsDBNull(3) ? "" : reader.GetString(3),
+                BirthDate = DateTime.Parse(reader.GetString(4)),
+                Address = reader.IsDBNull(5) ? "" : reader.GetString(5),
+                Department = reader.IsDBNull(6) ? "" : reader.GetString(6),
+                About = reader.IsDBNull(7) ? "" : reader.GetString(7)
+            };
+        }
+
+        private static void AddParameters(SqliteCommand command, Employee emp)
+        {
+            command.Parameters.AddWithValue("$fn", emp.FirstName ?? "");
+            command.Parameters.AddWithValue("$ln", emp.LastName ?? "");
+            command.Parameters.AddWithValue("$pt", emp.Patronymic ?? "");
+            command.Parameters.AddWithValue("$bd", emp.BirthDate.ToString("yyyy-MM-dd"));
+            command.Parameters.AddWithValue("$ad", emp.Address ?? "");
+            command.Parameters.AddWithValue("$dep", emp.Department ?? "");
+            command.Parameters.AddWithValue("$ab", emp.About ?? "");
+        }
+    }
+}
+4. Главная форма (Forms/MainForm.cs)
+Отображает список сотрудников в ListView и кнопки управления.
+csharp
+using EmployeeManager.Data;
+using EmployeeManager.Models;
+using System.Configuration;
+
+namespace EmployeeManager.Forms
+{
+    public partial class MainForm : Form
+    {
+        private readonly EmployeeRepository _repository;
+        private List<Employee> _employees;
+
+        public MainForm()
+        {
+            InitializeComponent();
+            // Читаем строку подключения из App.config
+            var connStr = ConfigurationManager.ConnectionStrings["Default"].ConnectionString;
+            _repository = new EmployeeRepository(connStr);
+            ConfigureListView();
+        }
+
+        private void ConfigureListView()
+        {
+            listViewEmployees.View = View.Details;
+            listViewEmployees.FullRowSelect = true;
+            listViewEmployees.Columns.Add("ФИО", 200);
+            listViewEmployees.Columns.Add("Дата рождения", 100);
+            listViewEmployees.Columns.Add("Отдел", 120);
+        }
+
+        private async void MainForm_Load(object sender, EventArgs e)
+        {
+            await LoadEmployeesAsync();
+        }
+
+        private async Task LoadEmployeesAsync()
+        {
+            _employees = await _repository.GetAllAsync();
+            listViewEmployees.Items.Clear();
+            foreach (var emp in _employees)
+            {
+                var item = new ListViewItem($"{emp.LastName} {emp.FirstName} {emp.Patronymic}");
+                item.SubItems.Add(emp.BirthDate.ToShortDateString());
+                item.SubItems.Add(emp.Department);
+                item.Tag = emp.Id; // Сохраняем ID во внутренний тег строки
+                listViewEmployees.Items.Add(item);
+            }
+        }
+
+        private void btnAdd_Click(object sender, EventArgs e)
+        {
+            var form = new EmployeeForm();
+            if (form.ShowDialog() == DialogResult.OK)
+            {
+                _ = LoadEmployeesAsync(); // Обновляем список после добавления
+            }
+        }
+
+        private void btnEdit_Click(object sender, EventArgs e)
+        {
+            if (listViewEmployees.SelectedItems.Count == 0) return;
+            int id = (int)listViewEmployees.SelectedItems[0].Tag;
+            EditEmployee(id);
+        }
+
+        private async void btnDelete_Click(object sender, EventArgs e)
+        {
+            if (listViewEmployees.SelectedItems.Count == 0) return;
+            if (MessageBox.Show("Удалить выбранного сотрудника?", "Подтверждение", MessageBoxButtons.YesNo) != DialogResult.Yes) return;
+
+            int id = (int)listViewEmployees.SelectedItems[0].Tag;
+            await _repository.DeleteAsync(id);
+            await LoadEmployeesAsync();
+        }
+
+        private void listViewEmployees_DoubleClick(object sender, EventArgs e)
+        {
+            if (listViewEmployees.SelectedItems.Count > 0)
+            {
+                int id = (int)listViewEmployees.SelectedItems[0].Tag;
+                EditEmployee(id);
+            }
+        }
+
+        private void EditEmployee(int id)
+        {
+            var employee = _employees.Find(x => x.Id == id);
+            if (employee == null) return;
+
+            var form = new EmployeeForm(employee);
+            if (form.ShowDialog() == DialogResult.OK)
+            {
+                _ = LoadEmployeesAsync();
+            }
+        }
+    }
+}
+Примечание к коду формы: В дизайнере WinForms необходимо создать элементы listViewEmployees, а также кнопки btnAdd, btnEdit, btnDelete и привязать их события (Load, Click, DoubleClick) к указанным выше методам.
+5. Форма редактирования/создания (Forms/EmployeeForm.cs)
+csharp
+using EmployeeManager.Models;
+using System;
+using System.Windows.Forms;
+
+namespace EmployeeManager.Forms
+{
+    public partial class EmployeeForm : Form
+    {
+        private Employee _employee;
+
+        // Конструктор для создания нового сотрудника
+        public EmployeeForm()
+        {
+            InitializeComponent();
+            Text = "Новый сотрудник";
+            _employee = new Employee { BirthDate = DateTime.Now.AddYears(-25) };
+        }
+
+        // Конструктор для редактирования существующего
+        public EmployeeForm(Employee employee) : this()
+        {
+            Text = "Редактирование сотрудника";
+            _employee = employee;
+            textBoxFirstName.Text = _employee.FirstName;
+            textBoxLastName.Text = _employee.LastName;
+            textBoxPatronymic.Text = _employee.Patronymic;
+            dateTimePickerBirth.Value = _employee.BirthDate;
+            textBoxAddress.Text = _employee.Address;
+            textBoxDepartment.Text = _employee.Department;
+            textBoxAbout.Text = _employee.About;
+        }
+
+        private void btnSave_Click(object sender, EventArgs e)
+        {
+            // Базовая проверка обязательных полей
+            if (string.IsNullOrWhiteSpace(textBoxFirstName.Text) || 
+                string.IsNullOrWhiteSpace(textBoxLastName.Text))
+            {
+                MessageBox.Show("Укажите имя и фамилию.");
+                return;
+            }
+
+            _employee.FirstName = textBoxFirstName.Text.Trim();
+            _employee.LastName = textBoxLastName.Text.Trim();
+            _employee.Patronymic = textBoxPatronymic.Text.Trim();
+            _employee.BirthDate = dateTimePickerBirth.Value.Date;
+            _employee.Address = textBoxAddress.Text.Trim();
+            _employee.Department = textBoxDepartment.Text.Trim();
+            _employee.About = textBoxAbout.Text.Trim();
+
+            DialogResult = DialogResult.OK;
+            Close();
+        }
+
+        private void btnCancel_Click(object sender, EventArgs e)
+        {
+            DialogResult = DialogResult.Cancel;
+            Close();
+        }
+    }
+}
+Примечание к коду формы: В дизайнере создаются текстовые поля (textBoxFirstName, textBoxLastName и т.д.), dateTimePickerBirth и кнопки btnSave, btnCancel.
+6. Точка входа (Program.cs)
+csharp
+using EmployeeManager.Forms;
+using System;
+using System.Windows.Forms;
+
+namespace EmployeeManager
+{
+    internal static class Program
+    {
+        [STAThread]
+        static void Main()
+        {
+            Application.SetHighDpiMode(HighDpiMode.SystemAware);
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
+            Application.Run(new MainForm());
+        }
+    }
+}
+7. Конфигурация (App.config)
+Файл необходим для хранения строки подключения вне кода.
+xml
+<?xml version="1.0" encoding="utf-8" ?>
+<configuration>
+  <connectionStrings>
+    <!-- База данных будет создана автоматически в папке с exe-файлом -->
+    <add name="Default" connectionString="Data Source=employees.db"/>
+  </connectionStrings>
+</configuration>
+8. Содержимое readme.txt
+Инструкция должна быть максимально простой для проверяющего.
+txt
+# Тестовое задание: Управление сотрудниками
+
+## Описание
+WinForms-приложение на .NET 6.0 (или новее) для CRUD-операций со списком сотрудников. 
+В качестве СУБД используется встроенная SQLite (файл employees.db создается автоматически).
+Дополнительных компонентов устанавливать не требуется.
+
+## Требования к окружению
+1. Windows 10 версии 1809 или новее.
+2. Наличие установленной среды выполнения .NET Desktop Runtime 6.0 или выше. 
+   (Скачать можно бесплатно с сайта Microsoft: https://dotnet.microsoft.com/download/dotnet/6.0/runtime)
+   
+   *Если у вас установлена Visual Studio 2022, среда выполнения уже присутствует.*
+
+## Запуск приложения
+Вариант 1 (Ручной):
+1. Распакуйте архив.
+2. Перейдите в папку \EmployeeManager\EmployeeManager.WinForms\bin\Debug\net6.0-windows\
+3. Запустите файл EmployeeManager.exe
+
+Вариант 2 (Из исходников):
+1. Откройте файл EmployeeManager.sln в Visual Studio 2022.
+2. Нажмите F5 (Запустить отладку) или Ctrl+F5 (Запустить без отладки).
+
+Приложение создаст файл базы данных employees.db в той же директории, где находится исполняемый файл, при первом обращении к данным.
+
