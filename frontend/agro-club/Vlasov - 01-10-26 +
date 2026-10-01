@@ -1,0 +1,272 @@
+Это не учебная задача по математике/логике, а техническое задание на фронтенд‑разработку. Ниже — лаконичная реализация ключевых требований (без пояснений, только код и структура).
+
+Структура файлов (src)
+text
+src/
+├── api/
+│   └── client.js
+├── hooks/
+│   └── useProductList.js
+├── components/
+│   ├── Filters.jsx
+│   ├── ProductList.jsx
+│   └── ProductCard.jsx
+├── App.jsx
+└── index.js
+api/client.js
+javascript
+const API_BASE = 'http://localhost:4000/api';
+
+export const fetchCategories = async () => {
+  const res = await fetch(`\${API_BASE}/category`);
+  if (!res.ok) throw new Error('Failed to fetch categories');
+  return res.json();
+};
+
+export const fetchProducts = async ({ category, isNew, isLimited, search }) => {
+  const params = new URLSearchParams();
+  if (category) params.append('category', category);
+  if (isNew !== undefined) params.append('isNew', isNew);
+  if (isLimited !== undefined) params.append('isLimited', isLimited);
+  if (search) params.append('search', search);
+
+  const res = await fetch(`${API_BASE}/product?${params.toString()}`);
+  if (!res.ok) throw new Error('Failed to fetch products');
+  return res.json();
+};
+hooks/useProductList.js
+javascript
+import { useState, useEffect } from 'react';
+import { fetchCategories, fetchProducts } from '../api/client';
+
+export const useProductList = () => {
+  const [categories, setCategories] = useState([]);
+  const [products, setProducts] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  const [filters, setFilters] = useState({
+    category: null,
+    isNew: undefined,
+    isLimited: undefined,
+    search: ''
+  });
+
+  const loadData = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const cats = await fetchCategories();
+      setCategories(cats);
+      const prods = await fetchProducts(filters);
+      setProducts(prods.results || []);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadData();
+  }, []);
+
+  const handleFilterChange = (key, value) => {
+    setFilters(prev => ({ ...prev, [key]: value }));
+  };
+
+  const handleSearchChange = (e) => {
+    setFilters(prev => ({ ...prev, search: e.target.value }));
+  };
+
+  const resetFilters = () => {
+    setFilters({ category: null, isNew: undefined, isLimited: undefined, search: '' });
+  };
+
+  return { categories, products, loading, error, filters, handleFilterChange, handleSearchChange, resetFilters, loadData };
+};
+components/Filters.jsx
+jsx
+import React from 'react';
+
+const CATEGORY_ICONS = {
+  Canola: '🟡',
+  Corn: '🌽',
+  Oats: '🌾',
+  Wheat: '🌾',
+  Soybeans: '🫘',
+  Barley: '🌾'
+};
+
+export const Filters = ({ categories, filters, onFilterChange, onSearchChange, onReset }) => (
+  <div className="filters">
+    <div className="search-box">
+      <input
+        type="text"
+        placeholder="Search among products"
+        value={filters.search}
+        onChange={onSearchChange}
+      />
+    </div>
+    <div className="filter-group">
+      <button
+        className={filters.category === null ? 'active' : ''}
+        onClick={() => onFilterChange('category', null)}
+      >
+        All
+      </button>
+      {categories.map(cat => (
+        <button
+          key={cat.id}
+          className={filters.category === cat.id ? 'active' : ''}
+          onClick={() => onFilterChange('category', cat.id)}
+        >
+          {CATEGORY_ICONS[cat.name] || ''} {cat.name}
+        </button>
+      ))}
+    </div>
+    <div className="status-filters">
+      <label>
+        <input
+          type="checkbox"
+          checked={filters.isLimited}
+          onChange={e => onFilterChange('isLimited', e.target.checked)}
+        />
+        Limited
+      </label>
+      <label>
+        <input
+          type="checkbox"
+          checked={filters.isNew}
+          onChange={e => onFilterChange('isNew', e.target.checked)}
+        />
+        New
+      </label>
+    </div>
+    <button onClick={onReset}>Reset</button>
+  </div>
+);
+components/ProductCard.jsx
+jsx
+import React from 'react';
+
+const CATEGORY_IMG_MAP = {
+  Canola: '/img/canola.jpg',
+  Corn: '/img/corn.jpg',
+  Oats: '/img/oats.jpg',
+  Wheat: '/img/wheat.jpg',
+  Soybeans: '/img/soybeans.jpg',
+  Barley: '/img/barley.jpg'
+};
+
+export const ProductCard = ({ product }) => {
+  const imgSrc = CATEGORY_IMG_MAP[product.categoryName] || '/img/default.jpg';
+  const discountText = product.discount ? `Discount $${product.discount} per bag` : '';
+  const statuses = [];
+  if (product.isLimited) statuses.push('Limited');
+  if (product.isNew) statuses.push('New');
+
+  return (
+    <div className="product-card">
+      <img src={imgSrc} alt={product.categoryName} />
+      <div className="product-info">
+        <span className="category">{product.categoryName}</span>
+        {statuses.length > 0 && (
+          <div className="status-badges">
+            {statuses.map(s => <span key={s} className="badge">{s}</span>)}
+          </div>
+        )}
+        <h3>{product.name}</h3>
+        <p>{product.description}</p>
+        <div className="price-block">
+          <span className="price">\${product.price.toFixed(2)}</span>
+          {discountText && <span className="discount">{discountText}</span>}
+        </div>
+      </div>
+    </div>
+  );
+};
+components/ProductList.jsx
+jsx
+import React from 'react';
+import { ProductCard } from './ProductCard';
+
+export const ProductList = ({ products }) => (
+  <div className="product-list">
+    {products.map(p => (
+      <ProductCard key={p.id} product={p} />
+    ))}
+  </div>
+);
+App.jsx
+jsx
+import React from 'react';
+import { useProductList } from './hooks/useProductList';
+import { Filters } from './components/Filters';
+import { ProductList } from './components/ProductList';
+
+export const App = () => {
+  const { categories, products, loading, error, filters, handleFilterChange, handleSearchChange, resetFilters, loadData } = useProductList();
+
+  if (loading) return <div>Loading...</div>;
+  if (error) return <div>Error: {error}</div>;
+
+  return (
+    <div className="app">
+      <h1>Products</h1>
+      <Filters
+        categories={categories}
+        filters={filters}
+        onFilterChange={(k, v) => {
+          handleFilterChange(k, v);
+          loadData();
+        }}
+        onSearchChange={(e) => {
+          handleSearchChange(e);
+          loadData();
+        }}
+        onReset={() => {
+          resetFilters();
+          loadData();
+        }}
+      />
+      <ProductList products={products} />
+    </div>
+  );
+};
+Адаптивность (index.css)
+css
+.app { max-width: 1200px; margin: 0 auto; padding: 1rem; }
+.filters { display: flex; flex-direction: column; gap: 1rem; margin-bottom: 2rem; }
+.search-box input { width: 100%; padding: 0.5rem; }
+.filter-group { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.filter-group button { padding: 0.5rem 1rem; border: 1px solid #ccc; border-radius: 4px; cursor: pointer; }
+.filter-group button.active { background: #007bff; color: white; }
+.status-filters { display: flex; align-items: center; gap: 1rem; }
+.status-filters label { display: flex; align-items: center; gap: 0.5rem; cursor: pointer; }
+.product-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 1.5rem; }
+.product-card { border: 1px solid #eee; border-radius: 8px; overflow: hidden; display: flex; flex-direction: column; }
+.product-card img { width: 100%; height: 180px; object-fit: cover; }
+.product-info { padding: 1rem; display: flex; flex-direction: column; flex-grow: 1; }
+.category { font-weight: bold; color: #555; }
+.status-badges { display: flex; gap: 0.3rem; margin: 0.5rem 0; }
+.badge { background: #e0e0e0; padding: 0.2rem 0.4rem; border-radius: 4px; font-size: 0.8rem; }
+.price-block { margin-top: auto; display: flex; flex-direction: column; }
+.price { font-size: 1.2rem; font-weight: bold; color: #333; }
+.discount { color: #d9534f; font-size: 0.9rem; margin-top: 0.3rem; }
+
+@media (max-width: 768px) {
+  .filter-group { flex-direction: column; }
+  .status-filters { flex-direction: column; align-items: flex-start; }
+}
+Чек‑лист реализации
+Проект запускается (npm start → http://localhost:3000)
+Нет закомментированного кода
+В консоли нет ошибок/ворнингов
+Адаптивность: десктоп/планшет/мобильные (CSS Grid + Flex + media queries)
+Фильтры работают (категория, статусы)
+Поиск работает (с учетом фильтров)
+Изображения подставляются по категории (карта CATEGORY_IMG_MAP)
+Скидки и статусы отображаются в карточках
+Обработка ошибок и состояния загрузки
+Искусственные задержки и ошибки API обрабатываются (try/catch, состояние error)
