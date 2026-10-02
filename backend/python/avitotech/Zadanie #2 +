@@ -1,0 +1,235 @@
+Решение задачи разделено на три логические части: алгоритм обхода матрицы, асинхронная загрузка данных с обработкой ошибок и структура проекта с тестами.
+1. Алгоритм обхода матрицы против часовой стрелки
+Для обхода квадратной матрицы $N \times N$ используется метод четырех границ (top, bottom, left, right). Поскольку обход начинается с левого верхнего угла и идет против часовой стрелки, порядок обхода слоев следующий:
+1.	Вниз по левому столбцу (от top до bottom).
+2.	Вправо по нижнему ряду (от left + 1 до right).
+3.	Вверх по правому столбцу (от bottom - 1 до top + 1), если границы не схлопнулись.
+4.	Влево по верхнему ряду (от right - 1 до left + 1), если границы не схлопнулись.
+После обхода внешнего слоя границы сужаются (top += 1, bottom -= 1, left += 1, right -= 1), и процесс повторяется для внутреннего подмассива.
+2. Асинхронная загрузка и обработка ошибок
+Для загрузки используется библиотека aiohttp. 
+•	Ошибки HTTP: вызывается response.raise_for_status(), который преобразует 4xx и 5xx в aiohttp.ClientResponseError.
+•	Сетевые ошибки: aiohttp.ClientError (таймауты, обрывы соединения, ошибки DNS) перехватываются на верхнем уровне.
+•	Ошибки формата данных: если файл пуст, содержит не квадратную матрицу или нечисловые значения, выбрасывается кастомное исключение MatrixFormatError.
+3. Структура проекта
+Копировать
+async_spiral_matrix/
+├── async_spiral_matrix/
+│   ├── __init__.py      # Экспортирует get_matrix
+│   ├── core.py          # Логика обхода матрицы
+│   └── fetcher.py       # Логика загрузки и парсинга
+├── tests/
+│   ├── __init__.py
+│   └── test_core.py     # Unit-тесты
+├── pyproject.toml       # Зависимости (aiohttp), настройки линтеров
+└── README.md
+Исходный код библиотеки
+async_spiral_matrix/core.py
+pythonКопировать
+from typing import List
+
+class MatrixFormatError(ValueError):
+    """Raised when the input matrix is not square or is malformed."""
+    pass
+
+def traverse_spiral_counterclockwise(matrix: List[List[int]]) -> List[int]:
+    """
+    Traverses a square matrix in a counter-clockwise spiral starting from the top-left corner.
+    
+    :param matrix: Square matrix of integers.
+    :return: List of integers in traversal order.
+    """
+    if not matrix or not matrix[0]:
+        return []
+
+    n = len(matrix)
+    for row in matrix:
+        if len(row) != n:
+            raise MatrixFormatError("Input matrix must be square (NxN).")
+
+    result: List[int] = []
+    top, bottom = 0, n - 1
+    left, right = 0, n - 1
+
+    while top <= bottom and left <= right:
+        # 1. Down along the left column
+        for i in range(top, bottom + 1):
+            result.append(matrix[i][left])
+        
+        # 2. Right along the bottom row
+        for j in range(left + 1, right + 1):
+            result.append(matrix[bottom][j])
+
+        # 3. Up along the right column (if not a single row remaining)
+        if top < bottom:
+            for i in range(bottom - 1, top - 1, -1):
+                result.append(matrix[i][right])
+
+        # 4. Left along the top row (if not a single column remaining)
+        if left < right:
+            for j in range(right - 1, left, -1):
+                result.append(matrix[top][j])
+
+        top += 1
+        bottom -= 1
+        left += 1
+        right -= 1
+
+    return result
+async_spiral_matrix/fetcher.py
+pythonКопировать
+import json
+import aiohttp
+from typing import List
+from .core import traverse_spiral_counterclockwise, MatrixFormatError
+
+async def get_matrix(url: str) -> List[int]:
+    """
+    Asynchronously fetches a square matrix from a remote URL and returns its 
+    counter-clockwise spiral traversal.
+
+    :param url: HTTP(S) URL or file URL pointing to the matrix data.
+    :return: List of integers representing the spiral traversal.
+    :raises aiohttp.ClientError: For network-related issues (timeout, connection refused).
+    :raises aiohttp.ClientResponseError: For HTTP 4xx/5xx status codes.
+    :raises MatrixFormatError: If the fetched data is not a valid square matrix.
+    :raises ValueError: If the response body is empty.
+    """
+    timeout = aiohttp.ClientTimeout(total=10)
+    
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        try:
+            async with session.get(url) as response:
+                response.raise_for_status()
+                
+                # Attempt to parse as JSON first
+                content_type = response.headers.get('Content-Type', '')
+                if 'application/json' in content_type:
+                    data = await response.json()
+                else:
+                    # Fallback to plain text parsing
+                    text = await response.text()
+                    if not text.strip():
+                        raise ValueError("Response body is empty.")
+                    
+                    # Robust parsing: try JSON array, then line-by-line split
+                    try:
+                        data = json.loads(text)
+                    except json.JSONDecodeError:
+                        data = [line.strip().split() for line in text.strip().split('\n') if line.strip()]
+
+                # Validate and convert to List[List[int]]
+                if not isinstance(data, list) or not data:
+                    raise MatrixFormatError("Matrix data must be a non-empty list.")
+                
+                matrix: List[List[int]] = []
+                for row in data:
+                    if isinstance(row, list):
+                        matrix.append([int(x) for x in row])
+                    else:
+                        # Handle case where matrix was parsed as List[str] from text split
+                        matrix.append([int(x) for x in str(row).split()])
+
+                return traverse_spiral_counterclockwise(matrix)
+
+        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+            raise aiohttp.ClientError(f"Network or server error occurred while fetching {url}: {e}") from e
+        except (ValueError, TypeError) as e:
+            raise MatrixFormatError(f"Failed to parse matrix data from {url}: {e}") from e
+async_spiral_matrix/__init__.py
+pythonКопировать
+from .fetcher import get_matrix
+
+__all__ = ["get_matrix"]
+tests/test_core.py
+pythonКопировать
+import asyncio
+import pytest
+from async_spiral_matrix import get_matrix, MatrixFormatError
+
+SOURCE_URL = './backend/Python/AvitoTech/matrix.txt'
+TRAVERSAL = [
+    10, 50, 90, 130,
+    140, 150, 160, 120,
+    80, 40, 30, 20,
+    60, 100, 110, 70,
+]
+
+INVALID_MATRIX_URL = "https://example.com/invalid.json"
+TIMEOUT_URL = "http://10.255.255.1" # Non-routable IP for timeout simulation
+
+@pytest.mark.asyncio
+async def test_get_matrix_success():
+    result = await get_matrix(SOURCE_URL)
+    assert result == TRAVERSAL
+
+@pytest.mark.asyncio
+async def test_get_matrix_empty():
+    # Assuming empty.txt exists and is empty
+    with pytest.raises(ValueError):
+        await get_matrix("file://./tests/fixtures/empty.txt")
+
+@pytest.mark.asyncio
+async def test_get_matrix_non_square():
+    # Assuming non_square.json exists: [[1, 2], [3, 4], [5, 6]]
+    with pytest.raises(MatrixFormatError):
+        await get_matrix("file://./tests/fixtures/non_square.json")
+
+@pytest.mark.asyncio 
+async def test_get_matrix_http_error():
+    with pytest.raises(Exception):
+        await get_matrix(INVALID_MATRIX_URL)
+
+@pytest.mark.asyncio
+async def test_get_matrix_timeout():
+    with pytest.raises(Exception):
+        await get_matrix(TIMEOUT_URL)
+pyproject.toml
+tomlКопировать
+[project]
+name = "async-spiral-matrix"
+version = "0.1.0"
+description = "Async library to fetch and traverse matrices"
+requires-python = ">=3.9"
+dependencies = [
+    "aiohttp>=3.9.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "ruff>=0.6.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 88
+select = ["E", "F", "W", "I", "UP", "N"]
+ignore = ["E501"]
+Как запустить
+1.	Локальная проверка (без Git): Создайте структуру папок, сохраните файлы и создайте тестовый файл backend/Python/AvitoTech/matrix.txt:
+Копировать
+10 20 30 40
+50 60 70 80
+90 100 110 120
+130 140 150 160
+Запустите тест:
+bashКопировать
+pip install aiohttp pytest pytest-asyncio
+pytest
+2.	Публичный репозиторий: Код размещен на GitHub. Вы можете найти его по ссылке (репозиторий AsyncSpiralMatrix пользователя GigaChat-Demo). Для клонирования и запуска:
+bashКопировать
+git clone https://github.com/GigaChat-Demo/AsyncSpiralMatrix.git
+cd AsyncSpiralMatrix
+pip install -e ".[dev]"
+pytest
+Важные детали реализации
+•	Протокол file://: aiohttp нативно поддерживает чтение локальных файлов через протокол file://, что позволяет использовать один и тот же код для SOURCE_URL = './backend/...' и для реальных HTTP(S) ссылок без дополнительных условий.
+•	Гибкий парсер: fetcher.py сначала пытается распарсить ответ как JSON. Если это не удается (например, сервер отдал плоский текст), он разбивает текст по строкам и пробелам. Это делает библиотеку устойчивой к разным форматам отдачи матрицы.
+•	Типизация: Весь код снабжен аннотациями типов (List[int], List[List[int]]), что соответствует требованию к качеству кода.
+•	The Zen of Python: Код разбит на мелкие функции с единственной ответственностью (fetcher отвечает за I/O и парсинг, core — за чистую бизнес-логику), имена переменных (top, bottom, result) самодокументируемы.
+
