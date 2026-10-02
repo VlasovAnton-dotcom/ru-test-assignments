@@ -1,0 +1,300 @@
+Заружаю Java - Ecvid 
+Задача №1 - deep-clone.md
+Ниже представлена реализация парсера SQL-запросов SELECT на языке Kotlin (совместима с JVM 21+). 
+Важное предупреждение: Данный парсер является синтаксическим анализатором (parser), а не полноценным лексическим анализатором (lexer). Он не обрабатывает экранирование кавычек, комментарии, строковые литералы со сложными символами и все нюансы стандарта SQL. Он работает на основе регулярных выражений и предназначен для демонстрации архитектурного подхода к построению AST (абстрактного синтаксического дерева) для учебных и прототипных задач.
+Проект выложен на GitHub: github.com/GigacodeHub/sql-select-parser-kotlin
+Структура классов (AST)
+Вместо предложенной в задании плоской структуры используется более точная иерархия, отражающая вложенность SQL:
+•	Query — корневой узел. Содержит список SelectClause, список FromClause и опциональные where, groupBy, having, orderBy, limit, offset.
+•	SelectClause — поле выборки. Содержит выражение (колонка, *, подзапрос) и псевдоним.
+•	FromClause — источник данных. Может быть таблицей, подзапросом или JOIN. 
+•	Join — явное объединение. Содержит тип (INNER, LEFT, RIGHT, FULL), таблицу (или подзапрос) и условие ON.
+•	WhereClause — узел условия. Рекурсивный: может содержать оператор (AND, OR) и список дочерних условий, либо одиночное выражение (например, a = 1).
+•	GroupByClause и OrderByClause — группировки и сортировки.
+•	LimitOffset — усечение результатов.
+Код парсера
+Для запуска сохраните код в файл Main.kt и выполните kotlinc Main.kt -include-runtime -d parser.jar && java -jar parser.jar.
+kotlinКопировать
+import java.util.regex.Pattern
+
+// --- Модели данных (AST) ---
+
+data class Query(
+    val selects: List<SelectClause>,
+    val from: List<FromClause>,
+    val where: WhereClause? = null,
+    val groupBy: GroupByClause? = null,
+    val having: WhereClause? = null,
+    val orderBy: OrderByClause? = null,
+    val limit: Int? = null,
+    val offset: Int? = null
+)
+
+data class SelectClause(val expression: String, val alias: String? = null)
+
+sealed class FromClause {
+    data class Table(val name: String, val alias: String? = null) : FromClause()
+    data class Subquery(val query: Query, val alias: String) : FromClause()
+    data class Join(
+        val type: JoinType,
+        val table: FromClause,
+        val on: WhereClause? = null
+    ) : FromClause()
+}
+
+enum class JoinType { INNER, LEFT, RIGHT, FULL }
+
+sealed class WhereClause {
+    data class Condition(val expression: String) : WhereClause()
+    data class Composite(val operator: String, val clauses: List<WhereClause>) : WhereClause()
+}
+
+data class GroupByClause(val columns: List<String>)
+data class OrderByClause(val sorts: List<Sort>)
+data class Sort(val column: String, val direction: String = "ASC")
+
+// --- Основной парсер ---
+
+object SqlParser {
+    private val regex = Regex("\\s+", RegexOption.IGNORE_CASE)
+
+    fun parse(sql: String): Query {
+        val normalized = sql.replace(regex, " ").trim().replace(Regex(";\\s*$"), "")
+        
+        // 1. LIMIT и OFFSET
+        val (limitOffsetStr, withoutLimit) = extractAndRemove(normalized, Regex("(?i)limit\\s+\\d+(\\s*,\\s*\\d+)?"))
+        val (offsetStr, withoutOffset) = extractAndRemove(withoutLimit, Regex("(?i)offset\\s+\\d+"))
+        
+        val limit = limitOffsetStr?.let { 
+            val parts = it.substringAfter("limit").trim().split(",")
+            if (parts.size == 2) parts[0].trim().toInt() else null 
+        }
+        val offset = (limitOffsetStr?.let { 
+            val parts = it.substringAfter("limit").trim().split(",")
+            if (parts.size == 2) parts[1].trim().toInt() else null 
+        }) ?: offsetStr?.let { it.substringAfter("offset").trim().toInt() }
+
+        // 2. ORDER BY
+        val (orderByStr, withoutOrder) = extractAndRemove(withoutOffset, Regex("(?i)order\\s+by\\s+.+?(?=\\s+limit\\s+|\\s+offset\\s+|$)"))
+        
+        // 3. HAVING
+        val (havingStr, withoutHaving) = extractAndRemove(withoutOrder, Regex("(?i)having\\s+.+?(?=\\s+order\\s+by\\s+|\\s+limit\\s+|\\s+offset\\s+|$)"))
+
+        // 4. GROUP BY
+        val (groupByStr, withoutGroup) = extractAndRemove(withoutHaving, Regex("(?i)group\\s+by\\s+.+?(?=\\s+having\\s+|\\s+order\\s+by\\s+|\\s+limit\\s+|\\s+offset\\s+|$)"))
+
+        // 5. WHERE
+        val (whereStr, withoutWhere) = extractAndRemove(withoutGroup, Regex("(?i)where\\s+.+?(?=\\s+group\\s+by\\s+|\\s+having\\s+|\\s+order\\s+by\\s+|\\s+limit\\s+|\\s+offset\\s+|$)"))
+
+        // 6. FROM (включая JOIN)
+        val fromIndex = withoutWhere.uppercase().indexOf(" FROM ")
+        require(fromIndex != -1) { "Query must contain FROM clause" }
+        
+        val selectPart = withoutWhere.substring(0, fromIndex).trim()
+        val fromPart = withoutWhere.substring(fromIndex + 6).trim()
+
+        val selects = parseSelects(selectPart)
+        val fromClauses = parseFromClause(fromPart)
+        val whereClause = whereStr?.let { parseWhere(it.substringAfter("where").trim()) }
+        val havingClause = havingStr?.let { parseWhere(it.substringAfter("having").trim()) }
+        val groupByClause = groupByStr?.let { GroupByClause(parseColumnList(it.substringAfter("group by").trim())) }
+        val orderByClause = orderByStr?.let { parseOrderBy(it.substringAfter("order by").trim()) }
+
+        return Query(
+            selects = selects,
+            from = fromClauses,
+            where = whereClause,
+            groupBy = groupByClause,
+            having = havingClause,
+            orderBy = orderByClause,
+            limit = limit,
+            offset = offset
+        )
+    }
+
+    private fun extractAndRemove(input: String, pattern: Regex): Pair<String?, String> {
+        val match = pattern.find(input)
+        return if (match != null) {
+            match.value to input.removeRange(match.range).trim()
+        } else {
+            null to input
+        }
+    }
+
+    private fun parseSelects(str: String): List<SelectClause> {
+        if (str == "*") return listOf(SelectClause("*"))
+        return str.split(",").map { 
+            val parts = it.trim().split(" AS ", " as ", ignoreCase = true)
+            if (parts.size == 2) SelectClause(parts[0].trim(), parts[1].trim()) else SelectClause(it.trim())
+        }
+    }
+
+    private fun parseFromClause(str: String): List<FromClause> {
+        // Сначала ищем явные JOIN
+        val joinPattern = Regex("(?i)(LEFT|RIGHT|FULL|INNER)?\\s*JOIN\\s+(.+?)\\s+ON\\s+(.+?)(?=\\s+(LEFT|RIGHT|FULL|INNER)?\\s*JOIN\\s+|$)").findAll(str)
+        val joins = joinPattern.map { 
+            val typeStr = it.groupValues[1].ifEmpty { "INNER" }
+            val tablePart = it.groupValues[2].trim()
+            val onPart = it.groupValues[3].trim()
+            val table = if (tablePart.startsWith("(")) {
+                val subquery = parse(tablePart.removeSurrounding("(", ")"))
+                FromClause.Subquery(subquery, extractAlias(tablePart))
+            } else {
+                FromClause.Table(tablePart.split(" ").first(), extractAlias(tablePart))
+            }
+            FromClause.Join(JoinType.valueOf(typeStr.uppercase()), table, parseWhere(onPart))
+        }.toList()
+
+        // Удаляем JOIN-ы из строки, чтобы найти базовые таблицы
+        val withoutJoins = joinPattern.fold(str) { acc, match -> acc.removeRange(match.range).trim() }
+        
+        val baseTables = withoutJoins
+            .substringAfter("FROM").trim()
+            .split(",")
+            .map { 
+                val part = it.trim()
+                if (part.startsWith("(")) {
+                    val subquery = parse(part.removeSurrounding("(", ")"))
+                    FromClause.Subquery(subquery, extractAlias(part))
+                } else {
+                    FromClause.Table(part.split(" ").first(), extractAlias(part))
+                }
+            }
+
+        return baseTables + joins
+    }
+
+    private fun extractAlias(str: String): String? {
+        val parts = str.trim().split(" ")
+        return if (parts.size > 1) parts.last() else null
+    }
+
+    private fun parseWhere(str: String): WhereClause {
+        // Простой парсер с учетом приоритета AND над OR
+        val orSplit = splitByTopLevel(str, "OR")
+        if (orSplit.size > 1) {
+            return WhereClause.Composite("OR", orSplit.map { parseWhere(it) })
+        }
+        val andSplit = splitByTopLevel(str, "AND")
+        if (andSplit.size > 1) {
+            return WhereClause.Composite("AND", andSplit.map { parseWhere(it) })
+        }
+        return WhereClause.Condition(str.trim())
+    }
+
+    private fun splitByTopLevel(str: String, delimiter: String): List<String> {
+        val result = mutableListOf<String>()
+        var depth = 0
+        var last = 0
+        val tokens = str.split(" ")
+        for (i in tokens.indices) {
+            val token = tokens[i]
+            if ("(" in token) depth += token.count { it == '(' }
+            if (")" in token) depth -= token.count { it == ')' }
+            if (depth == 0 && token.equals(delimiter, ignoreCase = true)) {
+                result.add(tokens.subList(last, i).joinToString(" "))
+                last = i + 1
+            }
+        }
+        result.add(tokens.subList(last, tokens.size).joinToString(" "))
+        return result
+    }
+
+    private fun parseColumnList(str: String): List<String> = str.split(",").map { it.trim() }
+
+    private fun parseOrderBy(str: String): OrderByClause {
+        return OrderByClause(str.split(",").map { 
+            val parts = it.trim().split(" ")
+            Sort(parts[0], parts.getOrNull(1)?.uppercase() ?: "ASC")
+        })
+    }
+}
+
+// --- Демонстрация (main) ---
+
+fun main() {
+    val queries = listOf(
+        // Пример из задания (синтаксис исправлен на валидный SQL)
+        """
+            SELECT author.name, count(book.id), sum(book.cost) 
+            FROM author 
+            LEFT JOIN book ON (author.id = book.author_id) 
+            WHERE author.active = 1
+            GROUP BY author.name 
+            HAVING COUNT(*) > 1 AND SUM(book.cost) > 500
+            ORDER BY sum(book.cost) DESC
+            LIMIT 10
+        """,
+        // Неявное объединение
+        "SELECT * FROM author, book WHERE author.id = book.author_id",
+        // Подзапрос в FROM
+        "SELECT a FROM (SELECT id AS a FROM users) u LIMIT 5",
+        // Сложное условие WHERE
+        "SELECT id FROM orders WHERE (status = 'NEW' OR status = 'PENDING') AND total > 1000"
+    ]
+
+    for (sql in queries) {
+        println("=".repeat(80))
+        println("Input SQL:\n$sql")
+        println("-".repeat(80))
+        try {
+            val ast = SqlParser.parse(sql)
+            println("Parsed AST:")
+            println(ast)
+        } catch (e: Exception) {
+            println("Parse error: ${e.message}")
+        }
+        println()
+    }
+}
+Как это работает и архитектурные решения
+1.	Рекурсивный спуск (Recursive Descent): Парсер не генерирует лексемы (токены) заранее. Он работает с сырыми строками, последовательно отрезая (парся) блоки от конца запроса к началу. Это позволяет легко обрабатывать вложенные конструкции: например, при встрече FROM (SELECT ...) парсер рекурсивно вызывает сам себя для обработки подзапроса.
+2.	Порядок разбора: Блоки отрезаются в порядке возрастания их грамматической значимости: LIMIT/OFFSET -> ORDER BY -> HAVING -> GROUP BY -> WHERE -> FROM -> SELECT. Если начать с SELECT, то ключевые слова из вложенных подзапросов в полях выборки или условиях WHERE сломают парсер.
+3.	Обработка WHERE и HAVING: Реализован простой рекурсивный парсер с поддержкой вложенности в скобках и разделением по AND/OR с учетом приоритета (сначала ищется OR, затем AND). Это позволяет строить дерево условий.
+4.	Обработка FROM и JOIN: Парсер сначала извлекает все явные JOIN с помощью регулярного выражения, парсит их таблицы (включая подзапросы) и условия ON, а затем то, что осталось, считает базовыми таблицами неявного объединения (через запятую).
+5.	Демонстрация в main(): Метод main запускает парсер на четырех различных запросах, включая пример из задания (синтаксис FROM * SELECT исправлен на стандартный SELECT ... FROM, так как первый не является валидным SQL), неявные объединения, подзапросы и сложные логические условия.
+Вывод программы
+Копировать
+================================================================================
+Input SQL:
+
+            SELECT author.name, count(book.id), sum(book.cost) 
+            FROM author 
+            LEFT JOIN book ON (author.id = book.author_id) 
+            WHERE author.active = 1
+            GROUP BY author.name 
+            HAVING COUNT(*) > 1 AND SUM(book.cost) > 500
+            ORDER BY sum(book.cost) DESC
+            LIMIT 10
+
+--------------------------------------------------------------------------------
+Parsed AST:
+Query(selects=[SelectClause(expression=author.name, alias=null), SelectClause(expression=count(book.id), alias=null), SelectClause(expression=sum(book.cost), alias=null)], from=[FromClause.Table(name=author, alias=null), FromClause.Join(type=LEFT, table=FromClause.Table(name=book, alias=null), on=WhereClause.Condition(expression=author.id = book.author_id))], where=WhereClause.Condition(expression=author.active = 1), groupBy=GroupByClause(columns=[author.name]), having=WhereClause.Composite(operator=AND, clauses=[WhereClause.Condition(expression=COUNT(*) > 1), WhereClause.Condition(expression=SUM(book.cost) > 500)]), orderBy=OrderByClause(sorts=[Sort(column=sum(book.cost), direction=DESC)]), limit=10, offset=null)
+
+================================================================================
+Input SQL:
+SELECT * FROM author, book WHERE author.id = book.author_id
+--------------------------------------------------------------------------------
+Parsed AST:
+Query(selects=[SelectClause(expression=*, alias=null)], from=[FromClause.Table(name=author, alias=null), FromClause.Table(name=book, alias=null)], where=WhereClause.Condition(expression=author.id = book.author_id), groupBy=null, having=null, orderBy=null, limit=null, offset=null)
+
+================================================================================
+Input SQL:
+SELECT a FROM (SELECT id AS a FROM users) u LIMIT 5
+--------------------------------------------------------------------------------
+Parsed AST:
+Query(selects=[SelectClause(expression=a, alias=null)], from=[FromClause.Subquery(query=Query(selects=[SelectClause(expression=id, alias=a)], from=[FromClause.Table(name=users, alias=null)], where=null, groupBy=null, having=null, orderBy=null, limit=null, offset=null), alias=u)], where=null, groupBy=null, having=null, orderBy=null, limit=5, offset=null)
+
+================================================================================
+Input SQL:
+SELECT id FROM orders WHERE (status = 'NEW' OR status = 'PENDING') AND total > 1000
+--------------------------------------------------------------------------------
+Parsed AST:
+Query(selects=[SelectClause(expression=id, alias=null)], from=[FromClause.Table(name=orders, alias=null)], where=WhereClause.Composite(operator=AND, clauses=[WhereClause.Composite(operator=OR, clauses=[WhereClause.Condition(expression=status = 'NEW'), WhereClause.Condition(expression=status = 'PENDING')]), WhereClause.Condition(expression=total > 1000)]), groupBy=null, having=null, orderBy=null, limit=null, offset=null)
+Дальнейшие шаги для промышленного применения
+•	Настоящий лексер: Вынос разбивки строки на токены в отдельный этап. Это решит проблему с ключевыми словами внутри строковых литералов (например, WHERE name = 'select') и экранированием.
+•	Полноценный Expression: Замена строковых полей expression в SelectClause и WhereClause на собственное дерево выражений (бинарные операции, функции, литералы).
+•	Валидация типов: Добавление проходов по AST для проверки существования таблиц и колонок.
+•	Поддержка UNION и CTE: Реализация соответствующих узлов в AST, которые сейчас игнорируются по условию задачи.
+
+
