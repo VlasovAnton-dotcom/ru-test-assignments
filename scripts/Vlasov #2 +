@@ -1,0 +1,123 @@
+Решение задачи №2 - Vlasov - 04-10-2026
+Представленный код — это скрипт на Python для автоматического скачивания внешних заданий (ссылок из README.md) и сохранения их в виде локальных Markdown-файлов. Он также обновляет ссылки в самом файле README.md, чтобы они указывали на скачанные копии, а не на внешние ресурсы.
+Скрипт написан грамотно: он использует блокировки файловой системы (fcntl), поддерживает режим эмуляции (--dry-run), корректно обрабатывает различные типы ссылок (GitHub-репозитории, Gist, Google Docs) и имеет защиту от повторного запуска. Однако в нем есть несколько синтаксических ошибок, опечаток и логических недочетов, которые необходимо исправить для его работоспособности.
+Критические ошибки
+1.	Неопределенная переменная file. В строке определения пути к README используется конструкция Path(file).parent.parent. Переменная file не определена. Для получения пути к текущему исполняемому скрипту следует использовать атрибут модуля:
+o	Было: README_PATH = Path(file).parent.parent / "README.md"
+o	Стало: README_PATH = Path(__file__).resolve().parent.parent / "README.md"
+2.	Синтаксическая ошибка в регулярном выражении. В функции sanitize_dir строка удаления зачеркнутого текста содержит лишнюю закрывающую скобку, что вызовет ошибку компиляции регулярного выражения.
+o	Было: name = re.sub(r"([^~]*)", r"\1", name)
+o	Стало: name = re.sub(r"~([^~]+)~", r"\1", name) (или полное удаление конструкции, если она избыточна).
+3.	Опечатка в URL при формировании строки запроса. В нескольких местах внутри функций fetch_github_repo и fetch_gist присутствуют лишние квадратные скобки [...] вокруг URL или текстовые вставки вроде [https://raw.githubusercontent.com/](https://raw.githubusercontent.com/). Это результат некорректного копирования кода с веб-страниц. Скобки нужно удалить, оставив только чистую строку URL.
+4.	Отсутствует импорт argparse. Хотя аргумент командной строки проверяется через проверку наличия подстроки в sys.argv (if "--dry-run" in sys.argv:), использование стандартной библиотеки argparse является более надежным и расширяемым подходом.
+5.	Ошибка отступа перед блоком if __name__ == "__main__":. Последняя строка должна быть сдвинута влево (нулевой уровень вложенности), иначе возникнет IndentationError.
+6.	Незакрытая кавычка в списке доменов. В массиве SKIP_URL_PATTERNS последняя запись "www.reg.ru/company заканчивается одинарной кавычкой вместо двойной.
+7.	Лишний символ переноса в ссылке API GitHub Gist. Строка http_get(f"[https://api.github.com/gists/](https://api.github.com/gists/){gist_id}") содержит лишний перенос после /gists/.
+8.	Логика обновления существующих файлов. Сейчас, если файл уже существует (local_file.exists()), скрипт пропускает загрузку контента, но все равно пытается обновить ссылку в README.md. Если структура папок изменилась, ссылка может стать битой. Логичнее либо всегда пересоздавать файлы, либо проверять актуальность содержимого по хешу/сигнатуре.
+9.	Обработка дубликатов путей. Словарь saved_paths предотвращает повторную запись файла в рамках одного запуска, но если два разных URL схлопываются в один путь функцией local_path_for, второй URL просто получит новую ссылку в README, хотя контент там будет от первого URL.
+Рекомендации по улучшению архитектуры и надежности
+•	Добавить таймауты и повторы (retries). Сетевые запросы могут прерываться случайным образом. Использование библиотек типа tenacity или простой цикл с экспоненциальной задержкой сделает сборку данных стабильнее.
+•	Валидация типов секций. Функция SECTION_TO_DIR.get(entry["section"] or "", "other") вернет пустую строку, если название секции отсутствует в словаре. Лучше добавить явный .lower() у ключа и дефолтное значение "other" без пустой строки, чтобы избежать создания директорий с пустыми именами.
+•	Нормализация пробелов в названиях компаний. При создании имени папки компании стоит дополнительно очищать заголовки от лишних пробелов и управляющих символов до вызова sanitize_dir.
+•	Улучшение режима --dry-run. Сейчас он показывает планируемые действия, но не выводит информацию о том, какие именно строки будут изменены в README.md. Добавление превью диффа сделало бы этот режим полезнее.
+•	Логирование прогресса. Вместо множества вызовов print можно подключить стандартный модуль logging с разными уровнями детализации (INFO для общего прогресса, DEBUG для сырых URL).
+•	Проверка размера сохраняемых файлов. Стоит игнорировать ответы с нулевым размером тела, так как некоторые сервисы возвращают 200 OK с пустой страницей.
+•	Типизация аннотаций. Аннотации вида str | None требуют Python 3.10+. Для совместимости со старыми версиями лучше писать Optional[str] с импортом из typing.
+Исправленный фрагмент ключевых функций
+Ниже приведен исправленный вариант наиболее проблемных участков кода.
+python
+import argparse
+from pathlib import Path
+import fcntl
+import json
+import os
+import re
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+# Корректное определение пути к корню репозитория
+REPO_ROOT = Path(__file__).resolve().parent.parent
+README_PATH = REPO_ROOT / "README.md"
+LOCK_FILE = REPO_ROOT / ".download_assignments.lock"
+
+def sanitize_dir(name: str) -> str:
+    """Make a string safe to use as a filesystem directory name."""
+    # Удаление markdown-разметки (жирный, курсив)
+    name = re.sub(r"[*_]{1,3}([^*_]+)[*_]{1,3}", r"\1", name)
+    # Удаление зачеркивания
+    name = re.sub(r"~([^~]+)~", r"\1", name)
+    # Удаление запрещенных символов ОС
+    name = re.sub(r'[<>:"/\\|?*()~]', "", name)
+    return name.strip()[:60]
+
+def fetch_github_repo(url: str) -> str | None:
+    m = re.search(r"github.com/([^/]+/[^/]+)/blob/([^/]+)/(.+)", url)
+    if m:
+        raw = f"https://raw.githubusercontent.com/{m.group(1)}/{m.group(2)}/{m.group(3)}"
+        return http_get(raw)
+
+    m = re.search(r"github\.com/([^/]+/[^/]+)/tree/([^/]+)/(.+)", url)
+    if m:
+        repo, branch, path = m.group(1), m.group(2), m.group(3)
+        content = http_get(f"https://raw.githubusercontent.com/{repo}/{branch}/{path}/README.md")
+        if content:
+            return content
+        return http_get(f"https://raw.githubusercontent.com/{repo}/{branch}/{path}")
+
+    m = re.search(r"github\.com/([^/]+/[^/]+)/tree/([^/?#]+)", url)
+    if m:
+        repo, branch = m.group(1), m.group(2)
+        return http_get(f"https://raw.githubusercontent.com/{repo}/{branch}/README.md")
+
+    m = re.search(r"github\.com/([^/]+/[^/?#]+?)(?:\.git)?(?:[?#]|$)", url)
+    if m:
+        repo = m.group(1)
+        for branch in ("main", "master"):
+            content = http_get(f"https://raw.githubusercontent.com/{repo}/{branch}/README.md")
+            if content:
+                return content
+    return None
+
+def run(dry_run: bool = False) -> None:
+    if not dry_run:
+        lock_fh = open(LOCK_FILE, "w")
+        try:
+            fcntl.flock(lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except IOError:
+            print("Another instance is already running.", file=sys.stderr)
+            sys.exit(1)
+
+    readme_text = README_PATH.read_text(encoding="utf-8")
+    lines = readme_text.split("\n")
+    entries = parse_assignments(readme_text)
+    
+    # ... остальной код цикла ...
+
+    if line_replacements:
+        for idx, new_line in sorted(line_replacements.items()):
+            lines[idx] = new_line
+        README_PATH.write_text("\n".join(lines), encoding="utf-8")
+        print(f"\nUpdated {len(line_replacements)} links in README.md")
+
+    # Блок main вынесен отдельно для чистого завершения функции run
+    # (см. ниже полный пример структуры)
+
+def _parse_args():
+    parser = argparse.ArgumentParser(description="Download external assignment links and save as local .md files.")
+    parser.add_argument("--dry-run", action="store_true", help="Show planned operations without network requests")
+    return parser.parse_args()
+
+if __name__ == "__main__":
+    args = _parse_args()
+    if args.dry_run:
+        print("--- DRY RUN (no network requests) ---\n")
+    run(dry_run=args.dry_run)
+Как запустить скрипт:
+1.	Сохраните исправленный код в файл, например scripts/download_assignments.py.
+2.	Убедитесь, что рядом находится ваш README.md.
+3.	Выполните тестовый запуск без изменения файлов: python scripts/download_assignments.py --dry-run
+4.	Если список действий выглядит верно, запустите полную загрузку: python scripts/download_assignments.py
+
