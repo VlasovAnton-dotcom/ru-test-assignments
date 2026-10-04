@@ -1,0 +1,231 @@
+Решение задачи №1 - cats Dealer +
+Help Giga Chat ;-)
+Перевод задачи на русский язык:
+
+Вы собираетесь создать простой сервис, который позволяет находить лучшего кота по лучшей цене для местоположения клиента.
+
+Существуют зоомагазины, у которых есть прайс-листы, доступные через REST API. Задача вашего сервиса — получить цены из каждого магазина, сравнить их и предложить клиенту лучшую сделку!
+
+Мы создали для вас 2 тестовых магазина.
+
+API «Cats Unlimited» (ответ в формате JSON) — https://nh7b1g9g23.execute-api.us-west-2.amazonaws.com/dev/cats/json
+API «Happy Cats» (ответ в формате XML) — https://nh7b1g9g23.execute-api.us-west-2.amazonaws.com/dev/cats/xml
+На данный момент сервис поддерживает только интеграцию с «Cats Unlimited». Кроме того, существующий код был написан стажером-разработчиком на Ruby и требует рефакторинга.
+
+Ваша задача:
+
+Реализовать интеграцию с «XML» (Happy Cats) и улучшить бизнес-логику для поиска лучшего предложения среди двух магазинов.
+Сделать сервис API-only. Необходимо убрать реализацию фронтенда (FE).
+Провести рефакторинг или переписать существующий код. Мы хотим видеть чистый дизайн, читаемый код и хорошее тестовое покрытие.
+
+На что обратить внимание:
+
+В данный момент наш продукт поддерживает только два зоомагазина. Однако в будущем это может измениться.
+Как вы знаете, сторонние интеграции часто ведут себя непредсказуемо. Необходимо убедиться, что наш продукт способен обрабатывать ошибки, возникающие при работе с этими сервисами.
+
+Проектирование архитектуры и выбор технологий
+
+Для реализации такого сервиса оптимальным выбором будет язык Ruby (с учетом контекста задачи) и фреймворк Ruby on Rails в режиме API-only. Это позволит быстро создать надежную структуру, а встроенные инструменты тестирования (RSpec, Minitest) обеспечат требуемое покрытие.
+
+Архитектурные принципы:
+
+SOLID и разделение ответственности: логика получения данных (адаптеры), бизнес-логика (сравнение цен) и представление ответа (контроллеры) должны быть строго разделены.
+Стратегия (Strategy Pattern) для парсеров: поскольку один магазин отдает JSON, а другой — XML, логика парсинга инкапсулируется в отдельные классы. Это позволит в будущем легко добавлять новые форматы (например, CSV).
+Адаптер (Adapter Pattern) для магазинов: каждый магазин имеет свой эндпоинт и структуру данных. Адаптер приводит ответ внешнего API к единому внутреннему формату.
+Очереди (рекомендация для продакшена): для изоляции пользователя от задержек внешних API запросы к магазинам стоит выносить в фоновые задачи (например, Sidekiq).
+
+Обработка ошибок:
+
+Сетевые ошибки: таймауты, недоступность хоста (использование Faraday с повторными попытками).
+Ошибки формата: магазин вернул HTML-страницу об ошибке вместо JSON/XML (использование строгих JSON/XML-схем для валидации).
+Бизнес-ошибки: пустой каталог, отсутствие поля price или currency.
+Единый формат ошибок API: все исключения должны перехватываться на уровне middleware и возвращаться клиенту в виде JSON с понятным кодом ошибки.
+
+Структура проекта (app/):
+
+Копировать
+app/
+├── controllers/
+│   └── api/v1/cats_controller.rb
+├── services/
+│   ├── cat_finder_service.rb (оркестрирует поиск)
+│   └── price_comparator_service.rb (выбирает минимальную цену)
+├── integrations/
+│   ├── base_shop.rb (абстрактный класс)
+│   ├── cats_unlimited_shop.rb
+│   └── happy_cats_shop.rb
+├── adapters/
+│   ├── base_adapter.rb
+│   ├── json_adapter.rb
+│   └── xml_adapter.rb
+└── models/
+    └── cat_offer.rb (PORO — Plain Old Ruby Object для хранения предложения)
+
+Пример реализации (Ruby on Rails API)
+
+Ниже приведены ключевые фрагменты кода, демонстрирующие чистую архитектуру.
+
+1. Контроллер (API-only)
+
+ruby
+Копировать
+# app/controllers/api/v1/cats_controller.rb
+class Api::V1::CatsController < ApplicationController
+  def index
+    result = CatFinderService.call(location: params[:location])
+
+    if result.success?
+      render json: { best_deal: result.data, shop: result.meta[:shop_name] }, status: :ok
+    else
+      render json: { error: result.error }, status: :service_unavailable
+    end
+  end
+end
+
+2. Сервис поиска (Бизнес-логика)
+
+ruby
+Копировать
+# app/services/cat_finder_service.rb
+class CatFinderService
+  def self.call(location:)
+    new(location).call
+  end
+
+  def initialize(location)
+    @location = location
+    @shops = [CatsUnlimitedShop.new, HappyCatsShop.new]
+  end
+
+  def call
+    offers = []
+    @shops.each do |shop|
+      # Параллелизация (например, через Concurrent::Future) рекомендуется здесь
+      response = shop.fetch_cats(@location)
+      offers.concat(response.offers) if response.success?
+    end
+
+    return Result.error('No offers found from any shop') if offers.empty?
+
+    best_offer = PriceComparatorService.find_best(offers)
+    Result.success(best_offer, shop_name: best_offer.shop_name)
+  rescue StandardError => e
+    Rails.logger.error "CatFinderService failed: #{e.message}"
+    Result.error('Internal service error')
+  end
+end
+
+3. Базовый класс магазина (инкапсуляция интеграции)
+
+ruby
+Копировать
+# app/integrations/base_shop.rb
+class BaseShop
+  def fetch_cats(location)
+    response = fetch_from_api(location)
+    adapter.parse(response.body)
+  end
+
+  private
+
+  def adapter
+    raise NotImplementedError
+  end
+
+  def fetch_from_api(location)
+    # HTTP-клиент с настройкой таймаутов (например, Faraday)
+    HTTP.timeout(connect: 2, read: 5).get(api_url, params: { location: location })
+  rescue Net::OpenTimeout, Net::ReadTimeout
+    # Возвращаем пустой объект ответа с флагом ошибки
+    EmptyResponse.new(success: false, error: 'Shop timeout')
+  end
+end
+
+4. Адаптер для XML (Happy Cats)
+
+ruby
+Копировать
+# app/adapters/xml_adapter.rb
+require 'nokogiri'
+
+class XmlAdapter < BaseAdapter
+  def parse(body)
+    doc = Nokogiri::XML(body)
+    offers = []
+    doc.css('cat').each do |node|
+      offers << CatOffer.new(
+        id: node.at_css('id')&.text,
+        name: node.at_css('name')&.text,
+        price: node.at_css('price')&.text.to_f,
+        shop_name: 'Happy Cats'
+      )
+    end
+    ParseResult.new(success: true, offers: offers)
+  rescue Nokogiri::XML::SyntaxError
+    ParseResult.new(success: false, error: 'Invalid XML from Happy Cats')
+  end
+end
+
+5. Сравнение цен
+
+ruby
+Копировать
+# app/services/price_comparator_service.rb
+class PriceComparatorService
+  def self.find_best(offers)
+    offers.min_by(&:price)
+  end
+end
+
+6. Объект предложения (PORO)
+
+ruby
+Копировать
+# app/models/cat_offer.rb
+class CatOffer
+  attr_reader :id, :name, :price, :shop_name
+
+  def initialize(id:, name:, price:, shop_name:)
+    @id = id
+    @name = name
+    @price = price
+    @shop_name = shop_name
+  end
+end
+
+План тестирования (RSpec)
+
+Для обеспечения надежности необходимо покрыть тестами следующие сценарии:
+
+Unit-тесты для адаптеров:
+JsonAdapter успешно парсит валидный JSON.
+JsonAdapter возвращает ошибку при невалидном JSON.
+XmlAdapter успешно парсит валидный XML.
+XmlAdapter возвращает ошибку при невалидном XML.
+Unit-тесты для сервисов:
+PriceComparatorService корректно выбирает самое дешевое предложение.
+CatFinderService возвращает лучшую сделку из двух магазинов.
+CatFinderService корректно работает, если один из магазинов недоступен (проверка отказоустойчивости).
+Интеграционные тесты (Request specs):
+Запрос GET /api/v1/cats?location=NY возвращает статус 200 и верный JSON с лучшей ценой.
+Запрос к API при недоступности обоих магазинов возвращает статус 503 и понятное сообщение об ошибке.
+Тесты на внешние зависимости:
+Использование webmock для заглушки (stubbing) ответов от Cats Unlimited и Happy Cats, чтобы тесты не зависели от интернета и состояния чужих серверов.
+
+Пример теста:
+
+ruby
+Копировать
+# spec/services/cat_finder_service_spec.rb
+RSpec.describe CatFinderService do
+  describe '.call' do
+    it 'returns the cheapest cat from both shops' do
+      allow(CatsUnlimitedShop).to receive(:new).and_return(double(fetch_cats: ParseResult.new(success: true, offers: [CatOffer.new(price: 100)])))
+      allow(HappyCatsShop).to receive(:new).and_return(double(fetch_cats: ParseResult.new(success: true, offers: [CatOffer.new(price: 90)])))
+
+      result = CatFinderService.call(location: 'NY')
+      expect(result.success?).to be true
+      expect(result.data.price).to eq(90)
+    end
+  end
+end
