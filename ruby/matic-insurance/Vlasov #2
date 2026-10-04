@@ -1,0 +1,270 @@
+Для реализации этой задачи оптимально использовать Ruby on Rails (версии 7.x). Архитектура будет построена с учетом требований к масштабируемости (файлы до 100 000 строк) и надежности.
+
+Архитектурное решение и стек технологий
+Фреймворк: Ruby on Rails в режиме API + View (для веб-интерфейса).
+База данных: PostgreSQL (надежная работа с транзакциями и индексами).
+Обработка в фоне: Sidekiq (для асинхронной обработки CSV-файлов, чтобы не блокировать веб-процесс).
+Парсинг CSV: Библиотека smarter_csv (эффективно обрабатывает большие файлы, не загружая их целиком в память) или стандартный CSV с потоковым чтением.
+Хранение файлов: Active Storage (с локальным диском для разработки или S3 для продакшена).
+Валидация: Стандартные валидации Active Record.
+Тестирование: RSpec (модели, сервисы, запросы), Shoulda-Matchers, FactoryBot.
+Модель данных (ERD)
+
+1. InsuranceImport (модель импорта)
+
+title: string — название импорта.
+status: integer (enum: created, started, completed, failed) — статус.
+progress: integer — процент выполнения (0..100).
+success_count: integer — количество успешно созданных клиентов.
+failure_count: integer — количество ошибок.
+file: attachment — связь с Active Storage.
+started_at: datetime, completed_at: datetime.
+
+2. Client (модель клиента)
+
+first_name: string
+last_name: string
+email: string (уникальный индекс в БД).
+date_of_birth: date.
+insurance_import: references — связь с импортом.
+
+3. ClientImportError (модель для логирования ошибок, опционально, но рекомендуется для файлов на 100к строк)
+
+insurance_import: references
+row_number: integer — номер строки в CSV.
+raw_data: jsonb — сырые данные строки.
+error_messages: text — текст ошибок валидации.
+Ключевая реализация кода
+
+1. Модель InsuranceImport и логика запуска
+
+ruby
+Копировать
+# app/models/insurance_import.rb
+class InsuranceImport < ApplicationRecord
+  has_one_attached :file
+  has_many :clients, dependent: :destroy
+  has_many :import_errors, dependent: :destroy
+
+  enum status: { created: 0, started: 1, completed: 2, failed: 3 }
+
+  def start_processing
+    return unless created?
+
+    update!(status: :started, started_at: Time.current)
+    CsvImportWorker.perform_async(id)
+  end
+end
+
+2. Фоновый воркер (Sidekiq)
+Для больших файлов (100 000 строк) критически важно читать файл потоково, а не загружать его в память целиком.
+
+ruby
+Копировать
+# app/workers/csv_import_worker.rb
+require 'csv'
+
+class CsvImportWorker
+  include Sidekiq::Job
+
+  def perform(import_id)
+    import = InsuranceImport.find(import_id)
+    
+    # Сброс счетчиков перед повторным запуском
+    import.update!(success_count: 0, failure_count: 0, progress: 0)
+    
+    total_lines = 0
+    created = 0
+    failed = 0
+
+    # Определяем общее количество строк для расчета прогресса
+    File.foreach(import.file.download.path) { total_lines += 1 }
+    total_lines -= 1 # вычитаем заголовок
+
+    CSV.foreach(import.file.download.path, headers: true, header_converters: :symbol) do |row|
+      client = Client.new(
+        first_name: row[:first_name],
+        last_name: row[:last_name],
+        email: row[:email],
+        date_of_birth: row[:date_of_birth],
+        insurance_import: import
+      )
+
+      if client.save
+        created += 1
+      else
+        failed += 1
+        import.import_errors.create!(
+          row_number: row.line,
+          raw_data: row.to_h,
+          error_messages: client.errors.full_messages.join(', ')
+        )
+      end
+
+      # Обновляем прогресс каждые 100 строк, чтобы не перегружать БД
+      if row.line % 100 == 0
+        import.update(
+          progress: ((row.line - 1).to_f / total_lines * 100).to_i,
+          success_count: created,
+          failure_count: failed
+        )
+      end
+    end
+
+    import.update!(
+      status: :completed,
+      completed_at: Time.current,
+      progress: 100,
+      success_count: created,
+      failure_count: failed
+    )
+  rescue StandardError => e
+    import.update!(status: :failed, completed_at: Time.current)
+    Rails.logger.error "Import ##{import_id} failed: #{e.message}"
+  end
+end
+
+3. Валидации модели Client
+
+ruby
+Копировать
+# app/models/client.rb
+class Client < ApplicationRecord
+  belongs_to :insurance_import
+
+  validates :first_name, :last_name, :email, :date_of_birth, presence: true
+  validates :first_name, :last_name, length: { minimum: 2 }
+  validates :email, format: { with: URI::MailTo::EMAIL_REGEXP }, uniqueness: true
+  
+  validate :age_within_range
+
+  private
+
+  def age_within_range
+    return if date_of_birth.blank?
+
+    age = Date.current.year - date_of_birth.year
+    age -= 1 if Date.current.yday < date_of_birth.yday
+
+    errors.add(:date_of_birth, 'must be between 18 and 100 years') unless age.between?(18, 100)
+  end
+end
+
+4. Контроллер InsuranceImportsController
+
+ruby
+Копировать
+# app/controllers/insurance_imports_controller.rb
+class InsuranceImportsController < ApplicationController
+  def index
+    @imports = InsuranceImport.order(created_at: :desc)
+  end
+
+  def new
+    @import = InsuranceImport.new
+  end
+
+  def create
+    @import = InsuranceImport.new(import_params)
+    if @import.save
+      redirect_to @import, notice: 'Import was successfully created. Press "Start" to begin processing.'
+    else
+      render :new, status: :unprocessable_entity
+    end
+  end
+
+  def show
+    @import = InsuranceImport.includes(:clients, :import_errors).find(params[:id])
+  end
+
+  def start
+    @import = InsuranceImport.find(params[:id])
+    @import.start_processing
+    redirect_to @import, notice: 'Import has started. This may take a while.'
+  end
+
+  def destroy
+    InsuranceImport.find(params[:id]).destroy
+    redirect_to insurance_imports_url, notice: 'Import was successfully destroyed.'
+  end
+
+  private
+
+  def import_params
+    params.require(:insurance_import).permit(:title, :file)
+  end
+end
+Тестирование (RSpec)
+
+Ожидается полное покрытие бизнес-логики.
+
+1. Спецификация модели Client
+
+ruby
+Копировать
+# spec/models/client_spec.rb
+require 'rails_helper'
+
+RSpec.describe Client, type: :model do
+  subject { build(:client) }
+
+  it { is_expected.to validate_presence_of(:first_name) }
+  it { is_expected.to validate_length_of(:first_name).is_at_least(2) }
+  it { is_expected.to validate_presence_of(:email) }
+  it { is_expected.to allow_value('test@example.com').for(:email) }
+  it { is_expected.not_to allow_value('invalid-email').for(:email) }
+
+  context 'age validation' do
+    it 'is valid if age is 18' do
+      subject.date_of_birth = 18.years.ago
+      expect(subject).to be_valid
+    end
+
+    it 'is invalid if age is 17' do
+      subject.date_of_birth = 17.years.ago
+      expect(subject).not_to be_valid
+    end
+
+    it 'is invalid if age is 101' do
+      subject.date_of_birth = 101.years.ago
+      expect(subject).not_to be_valid
+    end
+  end
+end
+
+2. Спецификация воркера (с использованием тестового режима Sidekiq)
+
+ruby
+Копировать
+# spec/workers/csv_import_worker_spec.rb
+require 'rails_helper'
+
+RSpec.describe CsvImportWorker, type: :worker do
+  let(:import) { create(:insurance_import, :with_small_csv) } # FactoryBot trait, который прикрепляет тестовый CSV
+
+  it 'processes the file and creates clients' do
+    expect { described_class.new.perform(import.id) }
+      .to change(Client, :count).by(5) # исходя из файла на 5 строк
+      .and change(import.import_errors, :count).by(0)
+
+    import.reload
+    expect(import.status).to eq('completed')
+    expect(import.success_count).to eq(5)
+    expect(import.progress).to eq(100)
+  end
+
+  context 'when file contains invalid data' do
+    let(:import) { create(:insurance_import, :with_invalid_csv) }
+
+    it 'counts failures and logs errors' do
+      described_class.new.perform(import.id)
+      import.reload
+      expect(import.success_count).to eq(4)
+      expect(import.failure_count).to eq(1)
+      expect(import.import_errors.first.error_messages).to include('Email is invalid')
+    end
+  end
+end
+Работа с большими файлами (100 000 строк)
+
+Для файла на 100 000 записей реализация через CSV.foreach (потоковое чтение) гарантирует, что потребление памяти Ruby-процессом останется на уровне нескольких мегабайт, а не гигабайт. Прогресс-бар в интерфейсе будет обновляться за счет периодического вызова update! внутри воркера. Администратор увидит актуальный процент и количество созданных/ошибочных записей без перезагрузки страницы, если добавить легкий polling (опрос) эндпоинта /insurance_imports/:id.json через JS на странице импорта, либо использовать ActionCable для пуш-уведомлений.
