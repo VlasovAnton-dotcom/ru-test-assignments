@@ -1,0 +1,108 @@
+Решение задачки - Власов - 05-10-2026
+Какой стек выбрать (и как обосновать в документации)
+Если важна скорость и покрытие требований:
+
+Flutter — один код под iOS/Android, отличная работа с состоянием (Bloc/Provider), анимации, темы, deep links и биометрия из коробки.
+Kotlin + Jetpack Compose — нативно для Android, Flow, корутины, хорошая типизация, легко покрыть юнит-тестами.
+SwiftUI — нативно для iOS, Combine, хорошая работа с биометрией и темами.
+Как обосновать архитектуру в README:
+
+«Выбран стек Flutter + Bloc для управления состоянием, потому что это позволяет единообразно обрабатывать асинхронные потоки данных (загрузка, кэш, оффлайн), легко тестировать отдельные слои (UI, Bloc, Repository) и быстро реализовать кроссплатформенные фичи (анимации, темы, биометрия). Сетевой слой изолирован в отдельном пакете, что упрощает мокирование API и написание тестов.»
+
+Структура проекта (пример для Flutter)
+text
+lib/
+  main.dart
+  app/
+    app.dart          # MaterialApp, темы, роутинг
+  core/
+    constants/        # URL, таймауты
+    di/               # get_it / provider
+    exceptions/       # NetworkException, OfflineException
+    utils/            # валидация email, helpers
+  features/
+    auth/
+      data/           # repository, datasource
+      domain/         # entities, use cases
+      presentation/   # экраны, формы, Blocs
+    posts/
+      data/
+      domain/
+      presentation/
+  infrastructure/
+    network/          # Dio/http, интерцепторы, таймауты
+    storage/          # Hive/SharedPreferences для кэша
+Реализация ключевых требований
+1. Экран авторизации и валидация
+Валидация:
+
+Email: регулярное выражение или EmailValidator.
+Пароль: длина ≥ 6 символов.
+Логика:
+
+При нажатии «Войти» валидируем форму.
+Если валидно — вызываем эмулированный POST /auth/login.
+Успех: сохраняем «токен» (можно просто флаг isLoggedIn = true в shared prefs) и переходим на список постов.
+Пример логики на Dart (псевдокод):
+
+dart
+Future<void> login(String email, String password) async {
+  if (!isValidEmail(email)) throw InvalidEmailException();
+  if (password.length < 6) throw WeakPasswordException();
+
+  // Эмуляция API
+  await Future.delayed(const Duration(seconds: 1));
+  if (email == 'test@test.com' && password == '123456') {
+    await _storage.setToken('fake_token');
+    return;
+  }
+  throw UnauthorizedException();
+}
+2. Экран списка постов и пулл-ту-рефреш
+Используем JSONPlaceholder (или любой публичный API с пагинацией):
+
+GET https://jsonplaceholder.typicode.com/posts?_page=1&_limit=10
+Карточка: title, body (обрезать до N символов), userId как «автор».
+Pull-to-refresh:
+
+В RefreshIndicator при свайпе вызываем fetchPosts(page: 1) и обновляем состояние.
+3. Оффлайн-режим и кэширование
+Стратегия:
+
+При наличии сети: загружаем данные, сохраняем в локальное хранилище (Hive, SQLite, SharedPreferences).
+При отсутствии сети: показываем закэшированные данные.
+Индикатор «нет соединения»: отдельный виджет/баннер, который виден, если запрос не удался из-за сети.
+Проверка сети: пакет connectivity_plus.
+
+Пример:
+
+dart
+final hasConnection = await Connectivity().checkConnection();
+if (hasConnection) {
+  posts = await _api.fetchPosts(page, limit);
+  await _cache.savePosts(posts);
+} else {
+  posts = await _cache.getPosts();
+}
+Дополнительные задания (плюсы к оценке)
+Биометрия: пакет local_auth. На экране авторизации кнопка «Войти с Face ID/Touch ID» — проверяем доступность и выполняем вход без ввода пароля.
+Анимации: AnimatedContainer для плавного появления карточек, Hero для переходов между списком и деталью поста.
+Тема: переключатель в настройках, хранение в SharedPreferences, применение через ThemeData.
+Deep Links: настроить в AndroidManifest.xml и Info.plist для app://post/{id}, в коде обработать URI и перейти на экран поста.
+GPS: geolocator — кнопка «Показать мою локацию» или сохранение координат при создании поста (если будет экран создания).
+Управление состоянием: Bloc/Cubit для постов и авторизации, отдельные репозитории.
+Тесты: юнит-тесты на валидацию, логику Bloc (событие → состояние), моки репозитория.
+Как оформить документацию (README)
+В README обязательно укажи:
+
+Архитектура (слои, почему выбран такой подход).
+Стек и зависимости (Flutter 3.x, Bloc, Dio, Hive, local_auth и т.д.).
+Инструкция по запуску (клонирование, flutter pub get, запуск, переменные окружения).
+Как проверить функционал (логин:  / 123456, как вызвать оффлайн-режим, где кнопка биометрии).
+Скриншоты (экран логина, список постов, оффлайн, тема, биометрия).
+Тесты (какие кейсы покрыты, как запустить: flutter test).
+Что важно для критериев оценки
+Корректность: приложение не падает, валидация работает, оффлайн показывает кэш, индикатор сети виден.
+Качество кода: чистые функции, разделение ответственности, типизация, понятные имена.
+Документация: README с архитектурой и инструкцией.
+Дополнительные фичи: выбери 2–3 самых простых (тема + биометрия + анимации) и сделай их качественно.
