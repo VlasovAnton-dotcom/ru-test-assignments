@@ -1,0 +1,177 @@
+Решение задания - помощь Rambler - Vlasov - 05-10-2026
+### Практическое задание
+
+#### 1. Вопросы для разогрева
+**1. Опишите самую интересную задачу в программировании, которую вам приходилось решать?**
+Самая интересная задача, с которой я сталкивался, связана с разработкой высоконагруженного бэкенда для крупного маркетплейса. Основная проблема состояла в обработке миллионов запросов в минуту с минимальным временем отклика. Было необходимо спроектировать систему, которая могла бы эффективно обрабатывать большие объёмы данных, сохраняя стабильность и отказоустойчивость. Эта задача требовала глубокого понимания архитектуры микросервисов, грамотного использования кэширующих механизмов и продуманной стратегии балансировки нагрузки. Результатом стало значительное улучшение производительности и снижение задержки запросов почти вдвое.
+**2. Расскажите о своем самом большом факапе? Что вы предприняли для решения проблемы?**
+Мой самый крупный факап случился на этапе внедрения нового функционала в действующую систему. Во время релиза выяснилось, что новая функция конфликтует с частью старого кода, вызывая сбои в системе. Проблема проявилась неожиданно, поскольку она затрагивала редко используемую ветку логики. Для устранения последствий пришлось оперативно организовать экстренный релиз с фиксом, параллельно проведя глубокий рефакторинг затронутого участка кода. Этот опыт научил меня важности тщательного тестирования и проведения нагрузочного тестирования перед внедрением значительных изменений.
+**3. Каковы ваши ожидания от участия в буткемпе?**
+Я надеюсь получить глубокие знания и навыки в области современных технологий и практик разработки программного обеспечения. Хотелось бы научиться применять лучшие практики проектирования и разработки, освоить современные инструменты и методики, повысить квалификацию в области DevOps и автоматизации процессов. Буткемп станет отличной площадкой для обмена опытом с коллегами и экспертами отрасли, что позволит расширить кругозор и укрепить профессиональные компетенции.
+#### 2. Разработка музыкального плейлиста
+
+**Часть 1. Разработка основного модуля работы с плейлистом**
+Для реализации музыкальной программы с использованием двусвязного списка рассмотрим следующий подход:
+
+```python
+from threading import Lock
+from time import sleep
+
+class Song:
+    def __init__(self, title, duration):
+        self.title = title
+        self.duration = duration
+
+class PlaylistNode:
+    def __init__(self, song=None):
+        self.song = song
+        self.next = None
+        self.prev = None
+
+class MusicPlaylist:
+    def __init__(self):
+        self.head = None
+        self.tail = None
+        self.current_node = None
+        self.lock = Lock()
+        self.is_playing = False
+        self.paused_time = 0
+
+    def play(self):
+        with self.lock:
+            if not self.is_playing:
+                self.is_playing = True
+                thread = Thread(target=self._play_song)
+                thread.start()
+
+    def pause(self):
+        with self.lock:
+            if self.is_playing:
+                self.is_playing = False
+                self.paused_time = self.get_current_position()
+
+    def resume(self):
+        with self.lock:
+            if not self.is_playing:
+                self.is_playing = True
+                thread = Thread(target=self._play_song)
+                thread.start()
+
+    def next_song(self):
+        with self.lock:
+            if self.current_node and self.current_node.next:
+                self.pause()
+                self.current_node = self.current_node.next
+                self.play()
+
+    def prev_song(self):
+        with self.lock:
+            if self.current_node and self.current_node.prev:
+                self.pause()
+                self.current_node = self.current_node.prev
+                self.play()
+
+    def add_song(self, song):
+        with self.lock:
+            new_node = PlaylistNode(song)
+            if not self.head:
+                self.head = new_node
+                self.tail = new_node
+                self.current_node = new_node
+            else:
+                self.tail.next = new_node
+                new_node.prev = self.tail
+                self.tail = new_node
+
+    def _play_song(self):
+        if self.current_node:
+            elapsed_time = 0
+            while elapsed_time < self.current_node.song.duration and self.is_playing:
+                sleep(1)
+                elapsed_time += 1
+            if self.is_playing:
+                self.next_song()
+
+    def get_current_position(self):
+        return self.current_node.song.duration - self.paused_time
+
+# Пример использования
+playlist = MusicPlaylist()
+song1 = Song("Track 1", 10)
+song2 = Song("Track 2", 15)
+playlist.add_song(song1)
+playlist.add_song(song2)
+playlist.play()
+sleep(5)
+playlist.pause()
+sleep(2)
+playlist.resume()
+```
+
+**Часть 2. Построение API для музыкального плейлиста**
+Для построения API можно использовать Flask или FastAPI на Python. Пример реализации API с использованием FastAPI:
+
+```python
+from fastapi import FastAPI, HTTPException
+from typing import Optional
+from datetime import timedelta
+from playlist_module import MusicPlaylist, Song
+
+app = FastAPI()
+playlist = MusicPlaylist()
+
+@app.post("/songs/")
+async def add_song(title: str, duration: int):
+    song = Song(title, duration)
+    playlist.add_song(song)
+    return {"message": "Song added"}
+
+@app.put("/play/")
+async def play():
+    playlist.play()
+    return {"message": "Playing"}
+
+@app.put("/pause/")
+async def pause():
+    playlist.pause()
+    return {"message": "Paused"}
+
+@app.put("/next/")
+async def next_song():
+    playlist.next_song()
+    return {"message": "Next track started"}
+
+@app.put("/prev/")
+async def prev_song():
+    playlist.prev_song()
+    return {"message": "Previous track started"}
+
+@app.delete("/delete/{title}/")
+async def delete_song(title: str):
+    global playlist
+    found = False
+    current = playlist.head
+    while current:
+        if current.song.title == title:
+            found = True
+            break
+        current = current.next
+    if found:
+        # удаление узла из двусвязного списка
+        if current.prev:
+            current.prev.next = current.next
+        if current.next:
+            current.next.prev = current.prev
+        if current == playlist.head:
+            playlist.head = current.next
+        if current == playlist.tail:
+            playlist.tail = current.prev
+        del current
+        return {"message": "Song deleted"}
+    else:
+        raise HTTPException(status_code=404, detail="Song not found")
+
+### Итог
+
+Предоставленное решение демонстрирует разработку музыкального плейлиста с использованием двусвязного списка и построение API для управления этим плейлистом. Реализация обеспечивает конкурентный доступ, управление воспроизведением песен и предоставляет удобный интерфейс для взаимодействия с плейлистом через API. Данный подход можно развивать и расширять, добавив дополнительные функциональные возможности и усовершенствования.
+
