@@ -1,0 +1,87 @@
+Zadanie #1 - https://giga.chat/link/gcsbriJPwC 
+Zadanie #2 - Задание 1. Функция get_score
+Ключевое наблюдение: список game_stamps отсортирован по offset по возрастанию — это следует из логики generate_stamp, где каждый следующий offset = предыдущий + offset_change (а offset_change всегда ≥ 1). Значит, можно использовать бинарный поиск вместо линейного, получая сложность 
+O
+(
+log
+⁡
+n
+)
+O(logn) вместо 
+O
+(
+n
+)
+O(n).
+
+Логика функции: ищем штамп с наибольшим offset, не превышающим запрошенный. Если точное совпадение — возвращаем сразу; если offset попадает между двумя штампами — возвращаем счёт предыдущего (потому что счёт не меняется между штампами).
+
+Файл с кодом: 
+
+python
+def get_score(game_stamps, offset):
+    left, right = 0, len(game_stamps) - 1
+    result = game_stamps[0]
+
+    while left <= right:
+        mid = (left + right) // 2
+        if game_stamps[mid]["offset"] == offset:
+            return game_stamps[mid]["score"]["home"], game_stamps[mid]["score"]["away"]
+        elif game_stamps[mid]["offset"] < offset:
+            result = game_stamps[mid]
+            left = mid + 1
+        else:
+            right = mid - 1
+
+    return result["score"]["home"], result["score"]["away"]
+Задание 2. Unit-тесты
+Написаны на unittest, 8 тестов — все проходят. Каждый тест проверяет один конкретный случай:
+
+Тест	Что проверяет
+test_offset_zero_returns_initial_score	Счёт на offset=0 → 0:0
+test_exact_offset_returns_correct_score	Точное совпадение offset
+test_offset_between_stamps_returns_previous_score	Offset между штампами → счёт предыдущего
+test_offset_greater_than_last_stamp	Offset больше последнего штампа
+test_single_stamp_list	Список из одного элемента
+test_score_never_decreases	Счёт монотонно не убывает
+test_return_type_is_tuple	Возвращается кортеж (int, int)
+test_random_offset_matches_linear_search	Бинарный поиск vs линейный — 200 случайных offset
+Файл с тестами: 
+
+Задание 3. Парсер смартфонов Ozon
+Полный код проекта Scrapy + Selenium: 
+
+Структура проекта:
+
+text
+ozon_smartphones/
+├── items.py              # модель данных SmartphoneItem
+├── middlewares.py        # SeleniumMiddleware + ProxyRotationMiddleware
+├── settings.py           # настройки Scrapy (delays, autorthrottle)
+├── spiders/
+│   └── ozon_spider.py    # паук + pipeline для распределения
+├── requirements.txt      # scrapy, selenium, pandas, webdriver-manager
+└── os_distribution.txt   # результат
+Как это работает:
+
+SeleniumMiddleware загружает страницы через headless Chrome — Ozon рендерит каталог и карточки товаров через JS, обычный HTTP-запрос не получит полный DOM. Прокрутка страницы вниз подгружает ленивый контент.
+ProxyRotationMiddleware ротирует прокси для каждого запроса (список прокси задаётся в PROXY_LIST).
+Паук сначала парсит страницу каталога со сортировкой по рейтингу, собирает ссылки на первые 100 товаров, затем переходит на каждую карточку и извлекает версию ОС из характеристик (используется несколько стратегий поиска: таблица характеристик, поиск по тексту, regex- fallback).
+Pipeline собирает все данные, фильтрует товары с определённой ОС и через Pandas строит распределение, сортируя по убыванию.
+Запуск:
+
+bash
+pip install -r requirements.txt
+scrapy crawl ozon_smartphones
+Пример результата в :
+
+text
+Android 13 — 28
+Android 14 — 22
+iOS 17 — 18
+Android 12 — 12
+iOS 16 — 8
+HarmonyOS 4 — 5
+Android 11 — 4
+Android 10 — 3
+Важно: селекторы CSS на Ozon могут меняться — при реальном запуске их может потребоваться обновить. Структура паука и pipeline останется прежней, изменятся только паттерны поиска в _extract_os_version.
