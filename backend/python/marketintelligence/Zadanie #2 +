@@ -1,0 +1,129 @@
+Vlasov - Zadanie №2 - 1. Структура проекта
+Создадим структуру проекта с использованием FastAPI и Docker.
+
+Структура директорий:
+
+text
+project/
+    ├── app/
+    │   ├── main.py
+    │   ├── schemas.py
+    │   └── utils.py
+    ├── docker-compose.yml
+    └── requirements.txt
+2. Реализация FastAPI сервиса
+main.py:
+
+python
+from fastapi import FastAPI, HTTPException, Depends
+from app.utils import encrypt, decrypt
+from app.schemas import SecretCreate, SecretResponse
+from pydantic import BaseModel
+import time
+
+app = FastAPI()
+
+class SecretDB:
+    def __init__(self):
+        # Initialize database connection
+        pass
+
+    async def generate(self, secret: str, passphrase: str):
+        # Encrypt secret and create key
+        encrypted_secret = encrypt(secret)
+        secret_key = str(time.time()) + str(encrypted_secret)
+        return secret_key
+
+    async def get_secret(self, secret_key: str, passphrase: str):
+        # Decrypt and validate
+        try:
+            decrypted_secret = decrypt(secret_key)
+            if decrypted_secret == passphrase:
+                return decrypted_secret
+            else:
+                raise HTTPException(status_code=400, detail="Invalid passphrase")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Error: {e}")
+
+# Dependency
+def get_secret_db():
+    return SecretDB()
+
+@app.post("/generate", response_model=SecretResponse)
+async def create_secret(secret: SecretCreate, db: SecretDB):
+    secret_key = await db.generate(secret.secret, secret.passphrase)
+    return {"secret_key": secret_key}
+
+@app.get("/secrets/{secret_key}", response_model=SecretResponse)
+async def get_secret(secret_key: str, passphrase: str, db: SecretDB):
+    secret = await db.get_secret(secret_key, passphrase)
+    return secret
+schemas.py:
+
+python
+from pydantic import BaseModel
+
+class SecretCreate(BaseModel):
+    secret: str
+    passphrase: str
+
+class SecretResponse(BaseModel):
+    secret: str
+utils.py:
+
+python
+import os
+from cryptography.fernet import Fernet
+
+def encrypt(secret):
+    key = Fernet(os.environ.get('SECRET_KEY'))
+    return key.encrypt(secret.encode())
+
+def decrypt(secret_key):
+    key = Fernet(os.environ.get('SECRET_KEY'))
+    return key.decrypt(secret_key.encode()).decode()
+3. Docker-compose файл
+docker-compose.yml:
+
+yaml
+version: '3.8'
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: uvicorn main:app --host 0.0.0.0 --port 80
+    ports:
+      - "8000:80"
+    depends_on:
+      - db
+  db:
+    image: mongo
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: example
+4. Тесты (pytest)
+tests/test_secrets.py:
+
+python
+import pytest
+from app.main import app
+from app.schemas import SecretCreate, SecretResponse
+from app.utils import encrypt, decrypt
+
+@pytest.fixture
+async def client():
+    await app.start()
+    return app.test_client()
+
+async def test_generate_secret(client):
+    data = SecretCreate(secret="test_secret", passphrase="password")
+    response = await client.post("/generate", json=data)
+    assert response.status_code == 200
+    secret_key = response.json()["secret_key"]
+    
+    # Test retrieval
+    async with client.get(f"/secrets/{secret_key}", json={"passphrase": "password"}) as res:
+        assert res.status_code ==
