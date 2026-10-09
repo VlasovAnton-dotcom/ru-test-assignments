@@ -1,0 +1,261 @@
+Решение задачи - Власов - 09-10-26
+Помощь Раблер ИИ
+### Реализация приложения на React Native CLI
+
+#### 1.
+ Установка среды разработки:
+
+
+- Установите Expo CLI или React Native CLI.
+
+- Создайте новый проект:
+
+
+```bash
+npx react-native init TodoApp
+```
+
+- Перейдите в каталог проекта:
+
+
+```bash
+cd TodoApp
+```
+
+#### 2.
+ Структура проекта:
+
+
+```bash
+TodoApp/
+|- App.js
+|- screens/
+|   |- AddTaskScreen.js
+|   |- TasksListScreen.js
+|- components/
+|   |- InputField.js
+|   |- TaskItem.js
+|- styles/
+|   |- globalStyles.js
+|- assets/
+|- App.test.js
+|- index.js
+|- package.json
+|- yarn.lock
+```
+
+#### 3.
+ Реализация компонентов:
+
+
+##### 3.
+1.
+ Global Styles:
+
+
+```javascript
+// styles/globalStyles.js
+export const globalStyles = {
+  container: {
+    flex: 1,
+    padding: 20,
+    backgroundColor: '#F5FCFF',
+  },
+  input: {
+    height: 40,
+    borderWidth: 1,
+    marginBottom: 10,
+    paddingHorizontal: 10,
+  },
+};
+```
+
+##### 3.
+2.
+ Входные поля:
+
+
+```javascript
+// components/InputField.js
+import React from 'react';
+import { TextInput, StyleSheet } from 'react-native';
+import { globalStyles } from '../styles/globalStyles';
+
+const InputField = ({ label, placeholder, onChangeText }) => {
+  return (
+    <>
+      <TextInput
+        style={globalStyles.input}
+        placeholder={placeholder}
+        onChangeText={onChangeText}
+      />
+    </>
+  );
+};
+
+export default InputField;
+```
+
+##### 3.
+3.
+ Элемент задачи:
+
+
+```javascript
+// components/TaskItem.js
+import React from 'react';
+import { View, Text, Button, StyleSheet } from 'react-native';
+
+const TaskItem = ({ task, onRemove }) => {
+  return (
+    <View style={styles.taskContainer}>
+      <Text>{task.title}</Text>
+      <Text>{task.description}</Text>
+      <Button title="Удалить" color="#ff0000" onPress={() => onRemove(task.id)} />
+    </View>
+  );
+};
+
+const styles = StyleSheet.create({
+  taskContainer: {
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#ccc',
+  },
+});
+
+export default TaskItem;
+```
+
+##### 3.
+4.
+ Экран добавления задачи:
+
+
+```javascript
+// screens/AddTaskScreen.js
+import React, { useState } from 'react';
+import { View, Button, StyleSheet } from 'react-native';
+import InputField from '../components/InputField';
+
+const AddTaskScreen = ({ onSubmit }) => {
+  const [title, setTitle] = useState('');
+  const [description, setDescription] = useState('');
+
+  const handleSubmit = () => {
+    if (!title || !description) return;
+    onSubmit({ title, description });
+    setTitle('');
+    setDescription('');
+  };
+
+  return (
+    <View style={styles.container}>
+      <InputField
+        label="Название задачи"
+        placeholder="Введите название задачи"
+        onChangeText={(text) => setTitle(text)}
+      />
+      <InputField
+        label="Описание задачи"
+        placeholder="Введите описание задачи"
+        onChangeText={(text) => setDescription(text)}
+      />
+      <Button title="Добавить задачу" onPress={handleSubmit} />
+    </View>
+  );
+};
+
+const styles = StyleSheet.create({
+  container: {
+    alignItems: 'center',
+    width: '100%',
+  },
+});
+
+export default AddTaskScreen;
+```
+
+##### 3.
+5.
+ Экран списка задач:
+
+
+```javascript
+// screens/TasksListScreen.js
+import React from 'react';
+import { FlatList, StyleSheet } from 'react-native';
+import TaskItem from '../components/TaskItem';
+
+const TasksListScreen = ({ tasks, onRemove }) => {
+  return (
+    <FlatList
+      data={tasks}
+      keyExtractor={(item) => item.id.toString()}
+      renderItem={({ item }) => (
+        <TaskItem task={item} onRemove={onRemove} />
+      )}
+    />
+  );
+};
+
+export default TasksListScreen;
+```
+
+##### 3.
+6.
+ Основной компонент приложения:
+
+
+```javascript
+// App.js
+import React, { useState } from 'react';
+import { View, StyleSheet } from 'react-native';
+import AddTaskScreen from './screens/AddTaskScreen';
+import TasksListScreen from './screens/TasksListScreen';
+
+const App = () => {
+  const [tasks, setTasks] = useState([]);
+
+  const addTask = (task) => {
+    setTasks([...tasks, { id: Date.now(), ...task }]);
+  };
+
+  const removeTask = (id) => {
+    setTasks(tasks.filter((task) => task.id !== id));
+  };
+
+  return (
+    <View style={styles.container}>
+      <AddTaskScreen onSubmit={addTask} />
+      <TasksListScreen tasks={tasks} onRemove={removeTask} />
+    </View>
+  );
+};
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    paddingTop: 50,
+    backgroundColor: '#F5FCFF',
+  },
+});
+
+export default App;
+```
+
+#### 4.
+ Запуск приложения:
+
+
+```bash
+npx react-native run-android
+# Или
+npx react-native run-ios
+```
+
+### Итог:
+
+
+Реализовано мобильное приложение на React Native, которое позволяет добавлять задачи, выводить их в списке, удалять элементы и очищает поля ввода после добавления задачи.
+ Компоненты максимально переиспользуются, что упрощает дальнейшее развитие и расширение функционала приложения.
