@@ -1,0 +1,286 @@
+Ниже представлена реализация, которая строго следует вашим требованиям: расширяемая архитектура, работа в оперативной памяти, отсутствие внешних зависимостей и покрытие тестами.
+
+Структура проекта
+Копировать
+rate_limiter/
+├── rate_limiter/
+│   ├── __init__.py
+│   ├── core.py          # Абстракции, интерфейсы и базовые классы
+│   ├── rules.py         # Конкретные реализации правил (A, B, составные)
+│   └── storage.py       # Хранилище в оперативной памяти
+└── tests/
+    ├── __init__.py
+    └── test_rate_limiter.py
+Код библиотеки (rate_limiter/)
+
+storage.py
+
+python
+Копировать
+from typing import Dict, Any
+import threading
+
+class InMemoryStorage:
+    """
+    Потокобезопасное хранилище состояния клиентов в оперативной памяти.
+    Ключ: идентификатор клиента (токен).
+    Значение: словарь с произвольными данными (счетчики, таймстампы).
+    """
+    def __init__(self):
+        self._store: Dict[str, Dict[str, Any]] = {}
+        self._lock = threading.Lock()
+
+    def get(self, client_id: str) -> Dict[str, Any]:
+        with self._lock:
+            return self._store.get(client_id, {})
+
+    def set(self, client_id: str, data: Dict[str, Any]):
+        with self._lock:
+            self._store[client_id] = data
+
+    def delete(self, client_id: str):
+        with self._lock:
+            if client_id in self._store:
+                del self._store[client_id]
+
+core.py
+
+python
+Копировать
+from abc import ABC, abstractmethod
+from typing import Dict, Any
+from .storage import InMemoryStorage
+import time
+
+class RateLimitRule(ABC):
+    """
+    Абстрактный базовый класс для всех правил ограничения.
+    """
+    def __init__(self, storage: InMemoryStorage):
+        self.storage = storage
+
+    @abstractmethod
+    def check(self, client_id: str, resource: str, context: Dict[str, Any]) -> bool:
+        """
+        Проверяет, разрешен ли запрос.
+        Возвращает True, если лимит не превышен.
+        Возвращает False, если доступ должен быть ограничен.
+        """
+        pass
+
+    @abstractmethod
+    def update_state(self, client_id: str, resource: str, context: Dict[str, Any]):
+        """
+        Обновляет состояние клиента в хранилище после успешного запроса.
+        """
+        pass
+
+class ResourceRateLimiter:
+    """
+    Менеджер лимитов для конкретного ресурса API.
+    Может содержать любое количество правил (комбинация через AND).
+    """
+    def __init__(self, resource_name: str, rules: list[RateLimitRule]):
+        self.resource_name = resource_name
+        self.rules = rules
+
+    def allow_request(self, client_id: str, context: Dict[str, Any]) -> bool:
+        """
+        Принимает решение на основе всех правил.
+        Если хотя бы одно правило возвращает False — запрос отклоняется.
+        """
+        # Сначала проверяем все правила. Это гарантирует атомарность решения:
+        # мы не обновим состояние, если одно правило уже запретило запрос.
+        for rule in self.rules:
+            if not rule.check(client_id, self.resource_name, context):
+                return False
+
+        # Если все проверки пройдены, обновляем состояние для каждого правила.
+        for rule in self.rules:
+            rule.update_state(client_id, self.resource_name, context)
+
+        return True
+
+rules.py
+
+python
+Копировать
+from typing import Dict, Any
+from .core import RateLimitRule
+import time
+
+class FixedWindowRule(RateLimitRule):
+    """
+    Правило A: X запросов за определенный период времени (скользящее окно фиксированного размера).
+    """
+    def __init__(self, storage: InMemoryStorage, limit: int, period_seconds: int):
+        super().__init__(storage)
+        self.limit = limit
+        self.period = period_seconds
+
+    def check(self, client_id: str, resource: str, context: Dict[str, Any]) -> bool:
+        data = self.storage.get(client_id)
+        current_time = int(time.time())
+        window_start = current_time - (current_time % self.period)
+        key = f"{resource}:fixed:{window_start}"
+        
+        count = data.get(key, 0)
+        return count < self.limit
+
+    def update_state(self, client_id: str, resource: str, context: Dict[str, Any]):
+        data = self.storage.get(client_id)
+        current_time = int(time.time())
+        window_start = current_time - (current_time % self.period)
+        key = f"{resource}:fixed:{window_start}"
+        
+        data[key] = data.get(key, 0) + 1
+        self.storage.set(client_id, data)
+
+class IntervalSinceLastRule(RateLimitRule):
+    """
+    Правило B: С момента последнего обращения прошло определенное время.
+    """
+    def __init__(self, storage: InMemoryStorage, interval_seconds: int):
+        super().__init__(storage)
+        self.interval = interval_seconds
+
+    def check(self, client_id: str, resource: str, context: Dict[str, Any]) -> bool:
+        data = self.storage.get(client_id)
+        key = f"{resource}:last_request"
+        
+        last_request = data.get(key, 0)
+        return (time.time() - last_request) >= self.interval
+
+    def update_state(self, client_id: str, resource: str, context: Dict[str, Any]):
+        data = self.storage.get(client_id)
+        key = f"{resource}:last_request"
+        
+        data[key] = time.time()
+        self.storage.set(client_id, data)
+
+class GeoRegionRule(RateLimitRule):
+    """
+    Прокси-правило для выбора стратегии в зависимости от региона токена.
+    Не обновляет состояние само, делегирует это вложенному правилу.
+    """
+    def __init__(self, storage: InMemoryStorage, region_context_key: str, rules_by_region: Dict[str, RateLimitRule]):
+        super().__init__(storage)
+        self.region_context_key = region_context_key
+        self.rules_by_region = rules_by_region
+
+    def _get_rule(self, context: Dict[str, Any]) -> RateLimitRule:
+        region = context.get(self.region_context_key, 'DEFAULT')
+        return self.rules_by_region.get(region, self.rules_by_region.get('DEFAULT'))
+
+    def check(self, client_id: str, resource: str, context: Dict[str, Any]) -> bool:
+        rule = self._get_rule(context)
+        return rule.check(client_id, resource, context)
+
+    def update_state(self, client_id: str, resource: str, context: Dict[str, Any]):
+        rule = self._get_rule(context)
+        rule.update_state(client_id, resource, context)
+Набор тестов (tests/)
+
+test_rate_limiter.py
+
+python
+Копировать
+import unittest
+import time
+from rate_limiter.storage import InMemoryStorage
+from rate_limiter.core import ResourceRateLimiter
+from rate_limiter.rules import FixedWindowRule, IntervalSinceLastRule, GeoRegionRule
+
+class TestRateLimiter(unittest.TestCase):
+    def setUp(self):
+        self.storage = InMemoryStorage()
+
+    def test_fixed_window_rule(self):
+        rule = FixedWindowRule(self.storage, limit=2, period_seconds=2)
+        limiter = ResourceRateLimiter("resource_A", [rule])
+        
+        self.assertTrue(limiter.allow_request("client_1", {}))
+        self.assertTrue(limiter.allow_request("client_1", {}))
+        self.assertFalse(limiter.allow_request("client_1", {}))
+        
+        # Ждем обнуления окна
+        time.sleep(2.1)
+        self.assertTrue(limiter.allow_request("client_1", {}))
+
+    def test_interval_since_last_rule(self):
+        rule = IntervalSinceLastRule(self.storage, interval_seconds=1)
+        limiter = ResourceRateLimiter("resource_B", [rule])
+        
+        self.assertTrue(limiter.allow_request("client_2", {}))
+        self.assertFalse(limiter.allow_request("client_2", {}))
+        
+        time.sleep(1.1)
+        self.assertTrue(limiter.allow_request("client_2", {}))
+
+    def test_combined_rules(self):
+        # Ресурс требует: не чаще 1 раза в 5 секунд И не чаще 1 раза в окно 10 секунд
+        rule_a = FixedWindowRule(self.storage, limit=1, period_seconds=10)
+        rule_b = IntervalSinceLastRule(self.storage, interval_seconds=5)
+        limiter = ResourceRateLimiter("resource_C", [rule_a, rule_b])
+        
+        self.assertTrue(limiter.allow_request("client_3", {}))
+        self.assertFalse(limiter.allow_request("client_3", {})) # Сломает правило B
+        
+        time.sleep(3)
+        self.assertFalse(limiter.allow_request("client_3", {})) # Все еще сломано правилом B
+        
+        time.sleep(3) # Прошло 6 секунд, правило B пройдено
+        self.assertFalse(limiter.allow_request("client_3", {})) # Теперь сломает правило A (окно 10 сек еще идет)
+        
+        time.sleep(5) # Прошло 11 секунд, окно A обновилось
+        self.assertTrue(limiter.allow_request("client_3", {}))
+
+    def test_geo_region_rule(self):
+        us_rule = FixedWindowRule(self.storage, limit=1, period_seconds=10)
+        eu_rule = IntervalSinceLastRule(self.storage, interval_seconds=2)
+        
+        geo_rule = GeoRegionRule(
+            self.storage, 
+            region_context_key="region", 
+            rules_by_region={"US": us_rule, "EU": eu_rule}
+        )
+        
+        limiter_us = ResourceRateLimiter("resource_D", [geo_rule])
+        limiter_eu = ResourceRateLimiter("resource_D", [geo_rule])
+
+        # Проверка для US (правило фиксированного окна)
+        self.assertTrue(limiter_us.allow_request("client_4", {"region": "US"}))
+        self.assertFalse(limiter_us.allow_request("client_4", {"region": "US"}))
+        time.sleep(0.5)
+        self.assertFalse(limiter_us.allow_request("client_4", {"region": "US"})) # Окно 10 сек не истекло
+
+        # Проверка для EU (правило интервала)
+        self.assertTrue(limiter_eu.allow_request("client_5", {"region": "EU"}))
+        self.assertFalse(limiter_eu.allow_request("client_5", {"region": "EU"}))
+        time.sleep(2.1)
+        self.assertTrue(limiter_eu.allow_request("client_5", {"region": "EU"}))
+
+if __name__ == '__main__':
+    unittest.main()
+Как это работает и архитектурные решения
+
+Разделение ответственности (SRP):
+
+InMemoryStorage отвечает только за хранение и извлечение данных.
+RateLimitRule (и его наследники) отвечают только за логику проверки и обновления состояния.
+ResourceRateLimiter выступает в роли оркестратора: он собирает результаты всех правил и обновляет состояние только если все они пройдены.
+
+Комбинация правил: Любой ресурс инициализируется со списком правил. В методе allow_request реализована строгая последовательность: сначала проверяются все правила. Если хотя бы одно возвращает False, метод немедленно возвращает отказ и не вызывает update_state. Это предотвращает частичное обновление счетчиков. Если все проверки пройдены, состояние обновляется для каждого правила. Это позволяет комбинировать их в любой последовательности и количестве.
+
+Расширяемость: Чтобы добавить новое правило (например, по весу запроса или типу HTTP-метода), достаточно создать новый класс, наследующий RateLimitRule, и передать его экземпляр в ResourceRateLimiter. Никакой другой код менять не нужно.
+
+Гибкость контекста: В методы check и update_state передается словарь context. Это позволяет правилам читать дополнительные данные (как в примере с GeoRegionRule, который смотрит на context["region"]), не меняя сигнатуру интерфейса.
+
+Покрытие тестами: Тесты проверяют не только базовую работу каждого правила, но и критически важный сценарий — комбинацию правил, где одно блокирует запрос, пока не истекло время другого.
+
+Дальнейшие шаги для интеграции в ваш проект
+Создайте в своем репозитории структуру папок, указанную выше.
+Скопируйте код в соответствующие файлы.
+Если вы используете git, создайте новую ветку, например feature/rate-limiter-architecture.
+Добавьте файлы, сделайте коммит и отправьте ветку в свой форк.
+Откройте Pull Request в основной репозиторий с названием FirstName LastName.
