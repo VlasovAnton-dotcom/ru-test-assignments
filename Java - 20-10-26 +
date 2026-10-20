@@ -1,0 +1,421 @@
+Решенени задачи - Vlasov - 20-10-2026 + 
+Ниже представлена архитектура и базовая реализация консольного приложения на Java 8, полностью соответствующая вашим требованиям. 
+Поскольку файлы не прикреплены к сообщению, в коде используются универсальные парсеры, которые можно будет легко адаптировать под реальную структуру ваших XML и CSV.
+1. Структура проекта (Gradle)
+build.gradle:
+gradleКопировать
+apply plugin: 'java'
+apply plugin: 'application'
+
+sourceCompatibility = 1.8
+targetCompatibility = 1.8
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    testImplementation 'junit:junit:4.12'
+}
+
+mainClassName = 'ru.citystats.Main'
+2. Модель данных
+src/main/java/ru/citystats/model/Building.java
+javaКопировать
+package ru.citystats.model;
+
+public class Building {
+    private final int floors;
+
+    public Building(int floors) {
+        this.floors = floors;
+    }
+
+    public int getFloors() {
+        return floors;
+    }
+}
+src/main/java/ru/citystats/model/City.java
+javaКопировать
+package ru.citystats.model;
+
+import java.util.ArrayList;
+import java.util.List;
+
+public class City {
+    private final String name;
+    private final List<Building> buildings;
+
+    public City(String name) {
+        this.name = name;
+        this.buildings = new ArrayList<>();
+    }
+
+    public String getName() {
+        return name;
+    }
+
+    public List<Building> getBuildings() {
+        return buildings;
+    }
+
+    public void addBuilding(Building building) {
+        buildings.add(building);
+    }
+}
+3. Абстракция парсера и реализации
+Чтобы приложение одинаково работало с XML и CSV, введем общий интерфейс.
+src/main/java/ru/citystats/parser/CityParser.java
+javaКопировать
+package ru.citystats.parser;
+
+import ru.citystats.model.City;
+
+import java.io.IOException;
+import java.util.List;
+
+public interface CityParser {
+    List<City> parse(String filePath) throws IOException;
+}
+src/main/java/ru/citystats/parser/CsvCityParser.java
+javaКопировать
+package ru.citystats.parser;
+
+import ru.citystats.model.Building;
+import ru.citystats.model.City;
+
+import java.io.BufferedReader;
+import java.io.FileReader;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
+
+// Предполагается, что CSV имеет заголовок и структуру: city_name;floor_count
+// Например: Moscow;5
+public class CsvCityParser implements CityParser {
+
+    @Override
+    public List<City> parse(String filePath) throws IOException {
+        List<City> cities = new ArrayList<>();
+        try (BufferedReader br = new BufferedReader(new FileReader(filePath))) {
+            String line;
+            // Пропускаем заголовок
+            br.readLine(); 
+            while ((line = br.readLine()) != null) {
+                String[] parts = line.split(";");
+                if (parts.length == 2) {
+                    String cityName = parts[0].trim();
+                    int floors;
+                    try {
+                        floors = Integer.parseInt(parts[1].trim());
+                    } catch (NumberFormatException e) {
+                        // Пропускаем некорректные строки, чтобы приложение не падало
+                        continue; 
+                    }
+                    
+                    City city = findOrCreateCity(cities, cityName);
+                    city.addBuilding(new Building(floors));
+                }
+            }
+        }
+        return cities;
+    }
+
+    private City findOrCreateCity(List<City> cities, String name) {
+        for (City city : cities) {
+            if (city.getName().equalsIgnoreCase(name)) {
+                return city;
+            }
+        }
+        City newCity = new City(name);
+        cities.add(newCity);
+        return newCity;
+    }
+}
+src/main/java/ru/citystats/parser/XmlCityParser.java
+javaКопировать
+package ru.citystats.parser;
+
+import ru.citystats.model.Building;
+import ru.citystats.model.City;
+
+import javax.xml.parsers.DocumentBuilder;
+import javax.xml.parsers.DocumentBuilderFactory;
+import javax.xml.parsers.ParserConfigurationException;
+import java.io.File;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
+
+import org.w3c.dom.Document;
+import org.w3c.dom.Element;
+import org.w3c.dom.Node;
+import org.w3c.dom.NodeList;
+import org.xml.sax.SAXException;
+
+// Предполагается структура XML:
+// <cities>
+//   <city name="Moscow">
+//     <building floors="5"/>
+//     <building floors="2"/>
+//   </city>
+// </cities>
+public class XmlCityParser implements CityParser {
+
+    @Override
+    public List<City> parse(String filePath) throws IOException {
+        List<City> cities = new ArrayList<>();
+        try {
+            File inputFile = new File(filePath);
+            DocumentBuilderFactory dbFactory = DocumentBuilderFactory.newInstance();
+            DocumentBuilder dBuilder = dbFactory.newDocumentBuilder();
+            Document doc = dBuilder.parse(inputFile);
+            doc.getDocumentElement().normalize();
+
+            NodeList cityNodes = doc.getElementsByTagName("city");
+            for (int temp = 0; temp < cityNodes.getLength(); temp++) {
+                Node node = cityNodes.item(temp);
+                if (node.getNodeType() == Node.ELEMENT_NODE) {
+                    Element element = (Element) node;
+                    String cityName = element.getAttribute("name");
+                    City city = findOrCreateCity(cities, cityName);
+
+                    NodeList buildingNodes = element.getElementsByTagName("building");
+                    for (int b = 0; b < buildingNodes.getLength(); b++) {
+                        Node bNode = buildingNodes.item(b);
+                        if (bNode.getNodeType() == Node.ELEMENT_NODE) {
+                            Element bElement = (Element) bNode;
+                            int floors = Integer.parseInt(bElement.getAttribute("floors"));
+                            city.addBuilding(new Building(floors));
+                        }
+                    }
+                }
+            }
+        } catch (ParserConfigurationException | SAXException e) {
+            throw new IOException("Ошибка парсинга XML", e);
+        }
+        return cities;
+    }
+
+    private City findOrCreateCity(List<City> cities, String name) {
+        for (City city : cities) {
+            if (city.getName().equalsIgnoreCase(name)) {
+                return city;
+            }
+        }
+        City newCity = new City(name);
+        cities.add(newCity);
+        return newCity;
+    }
+}
+4. Логика обработки и вывода статистики
+src/main/java/ru/citystats/stats/StatisticsService.java
+javaКопировать
+package ru.citystats.stats;
+
+import ru.citystats.model.City;
+
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+public class StatisticsService {
+
+    // 1) Поиск дублирующихся записей (городов)
+    public Map<String, Integer> findDuplicateCities(List<City> cities) {
+        Map<String, Integer> counts = new HashMap<>();
+        for (City city : cities) {
+            String name = city.getName().toLowerCase();
+            counts.put(name, counts.getOrDefault(name, 0) + 1);
+        }
+        
+        // Оставляем только те, что встречаются более одного раза
+        Map<String, Integer> duplicates = new HashMap<>();
+        for (Map.Entry<String, Integer> entry : counts.entrySet()) {
+            if (entry.getValue() > 1) {
+                duplicates.put(entry.getKey(), entry.getValue());
+            }
+        }
+        return duplicates;
+    }
+
+    // 2) Подсчет этажности
+    public Map<String, int[]> countBuildingsByFloors(List<City> cities) {
+        Map<String, int[]> stats = new HashMap<>();
+        for (City city : cities) {
+            int[] floorsCount = new int[6]; // Индексы 1-5 для этажей, 0 не используем
+            for (Building building : city.getBuildings()) {
+                int f = building.getFloors();
+                if (f >= 1 && f <= 5) {
+                    floorsCount[f]++;
+                }
+            }
+            stats.put(city.getName(), floorsCount);
+        }
+        return stats;
+    }
+}
+5. Точка входа (Консольное приложение)
+src/main/java/ru/citystats/Main.java
+javaКопировать
+package ru.citystats;
+
+import ru.citystats.parser.*;
+import ru.citystats.stats.StatisticsService;
+
+import java.io.IOException;
+import java.util.List;
+import java.util.Map;
+import java.util.Scanner;
+
+public class Main {
+    private static final String EXIT_COMMAND = "exit";
+
+    public static void main(String[] args) {
+        Scanner scanner = new Scanner(System.in);
+        StatisticsService statsService = new StatisticsService();
+
+        System.out.println("Приложение запущено. Введите путь к файлу (XML или CSV) или команду 'exit' для выхода.");
+
+        while (true) {
+            System.out.print("> ");
+            String input = scanner.nextLine().trim();
+
+            if (EXIT_COMMAND.equalsIgnoreCase(input)) {
+                System.out.println("Завершение работы.");
+                break;
+            }
+
+            if (input.isEmpty()) {
+                continue;
+            }
+
+            try {
+                CityParser parser;
+                if (input.toLowerCase().endsWith(".csv")) {
+                    parser = new CsvCityParser();
+                } else if (input.toLowerCase().endsWith(".xml")) {
+                    parser = new XmlCityParser();
+                } else {
+                    System.out.println("Неизвестный формат файла. Поддерживаются только .xml и .csv");
+                    continue;
+                }
+
+                List<City> cities = parser.parse(input);
+                if (cities.isEmpty()) {
+                    System.out.println("Файл прочитан, но данных не обнаружено.");
+                    continue;
+                }
+
+                // 1. Дубликаты городов
+                Map<String, Integer> duplicates = statsService.findDuplicateCities(cities);
+                System.out.println("\n--- Дублирующиеся записи городов ---");
+                if (duplicates.isEmpty()) {
+                    System.out.println("Дубликаты не найдены.");
+                } else {
+                    for (Map.Entry<String, Integer> entry : duplicates.entrySet()) {
+                        System.out.printf("Город: %s, Количество повторений: %d%n", entry.getKey(), entry.getValue());
+                    }
+                }
+
+                // 2. Этажность
+                Map<String, int[]> floorStats = statsService.countBuildingsByFloors(cities);
+                System.out.println("\n--- Количество зданий по этажам ---");
+                for (Map.Entry<String, int[]> entry : floorStats.entrySet()) {
+                    System.out.printf("Город: %s%n", entry.getKey());
+                    int[] data = entry.getValue();
+                    for (int i = 1; i <= 5; i++) {
+                        System.out.printf("  %d этажей: %d%n", i, data[i]);
+                    }
+                }
+                System.out.println("\nОбработка завершена. Введите путь к следующему файлу или 'exit'.");
+
+            } catch (IOException e) {
+                System.out.println("Ошибка при чтении или обработке файла: " + e.getMessage());
+                System.out.println("Приложение ожидает ввод следующего файла.");
+            } catch (Exception e) {
+                // Глобальный отлов непредвиденных ошибок, чтобы приложение не упало
+                System.out.println("Произошла непредвиденная ошибка: " + e.getMessage());
+                System.out.println("Приложение ожидает ввод следующего файла.");
+            }
+        }
+        scanner.close();
+    }
+}
+6. Рекомендации по тестированию (jUnit 4)
+Для тестирования логики обработки создайте в папке src/test/resources тестовые файлы test.csv и test.xml с небольшим набором данных.
+src/test/java/ru/citystats/StatisticsServiceTest.java
+javaКопировать
+package ru.citystats;
+
+import org.junit.Before;
+import org.junit.Test;
+import ru.citystats.model.Building;
+import ru.citystats.model.City;
+import ru.citystats.stats.StatisticsService;
+
+import java.util.ArrayList;
+import java.util.List;
+
+import static org.junit.Assert.*;
+
+public class StatisticsServiceTest {
+
+    private StatisticsService service;
+    private List<City> testCities;
+
+    @Before
+    public void setUp() {
+        service = new StatisticsService();
+        testCities = new ArrayList<>();
+
+        City moscow1 = new City("Moscow");
+        moscow1.addBuilding(new Building(5));
+        moscow1.addBuilding(new Building(2));
+
+        City moscow2 = new City("Moscow"); // Дубль
+        moscow2.addBuilding(new Building(1));
+
+        City spb = new City("Saint-Petersburg");
+        spb.addBuilding(new Building(3));
+        spb.addBuilding(new Building(3));
+        spb.addBuilding(new Building(10)); // Игнорируется, так как > 5
+
+        testCities.add(moscow1);
+        testCities.add(moscow2);
+        testCities.add(spb);
+    }
+
+    @Test
+    public void testFindDuplicateCities() {
+        var duplicates = service.findDuplicateCities(testCities);
+        assertEquals(1, duplicates.size());
+        assertTrue(duplicates.containsKey("moscow"));
+        assertEquals(2, (int) duplicates.get("moscow"));
+    }
+
+    @Test
+    public void testCountBuildingsByFloors() {
+        var stats = service.countBuildingsByFloors(testCities);
+        
+        int[] moscowData = stats.get("Moscow");
+        assertEquals(1, moscowData[1]);
+        assertEquals(1, moscowData[2]);
+        assertEquals(0, moscowData[3]);
+        assertEquals(0, moscowData[4]);
+        assertEquals(1, moscowData[5]);
+
+        int[] spbData = stats.get("Saint-Petersburg");
+        assertEquals(1, spbData[1]);
+        assertEquals(0, spbData[2]);
+        assertEquals(2, spbData[3]);
+        assertEquals(0, spbData[4]);
+        assertEquals(0, spbData[5]);
+    }
+}
+Дальнейшие шаги
+1.	Адаптация парсеров. Реальные структуры XML и CSV почти наверняка отличаются от примеров в коде. Вам нужно будет изменить методы parse в XmlCityParser и CsvCityParser, чтобы они доставали названия городов и количество этажей из нужных тегов/столбцов.
+2.	Сборка. В консоли выполните gradle build. Готовый исполняемый JAR-файл появится в папке build/libs/.
+3.	Запуск. java -jar build/libs/ваше_имя_проекта.jar.
+4.	Улучшение команды выхода. Сейчас используется команда exit. Если требуется именно комбинация клавиш (например, Ctrl+C), стандартный Scanner может некорректно её обрабатывать, обрывая поток ввода. В таком случае консольный ввод лучше обернуть в отдельный поток, который отлавливает java.io.InterruptedIOException, или использовать Console.readPassword(), но это усложнит логику. Для большинства задач команда exit является надежным и достаточным решением.
+
