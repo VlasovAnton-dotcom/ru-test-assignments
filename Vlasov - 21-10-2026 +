@@ -1,0 +1,365 @@
+Это классическое тестовое задание на позицию Full-stack разработчика (PHP + Vue.js). Работодатель оценивает не только умение написать работающий код, но и архитектуру, чистоту решений, работу с Git и внимание к деталям. 
+
+Ниже представлена подробная реализация проекта, которая полностью покрывает требования, демонстрирует владение стеком и следует лучшим практикам Laravel и Vue.js.
+
+Общая архитектура проекта
+Backend: Laravel 13 (PHP 8.4). Используется для API, работы с базой данных и валидации.
+Frontend: Vue 3 (Composition API) с Vite. Отвечает за реактивность формы и рендеринг таблицы.
+База данных: По умолчанию Laravel использует SQLite для простоты запуска, но миграции написаны под стандартный SQL.
+Стилизация: Element Plus (бонусное требование) для формы, таблицы и индикатора загрузки.
+Контроль версий: Структурированный Git с осмысленными коммитами.
+Backend (Laravel 13)
+
+1. Миграция и Сидер (Migrations & Seeders)
+Создаем таблицу houses. Поля price и числовые характеристики лучше хранить как unsignedInteger или decimal.
+
+database/migrations/2024_01_01_000001_create_houses_table.php:
+
+php
+Копировать
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    public function up(): void
+    {
+        Schema::create('houses', function (Blueprint $table) {
+            $table->id();
+            $table->string('name');
+            $table->unsignedSmallInteger('bedrooms');
+            $table->unsignedSmallInteger('bathrooms');
+            $table->unsignedSmallInteger('storeys');
+            $table->unsignedSmallInteger('garages');
+            $table->unsignedInteger('price'); // Хранение в центах или целых единицах
+            $table->timestamps();
+        });
+    }
+
+    public function down(): void
+    {
+        Schema::dropIfExists('houses');
+    }
+};
+
+database/seeders/HousesSeeder.php (парсинг CSV):
+
+php
+Копировать
+use Illuminate\Database\Seeder;
+use Illuminate\Support\Facades\DB;
+
+class HousesSeeder extends Seeder
+{
+    public function run(): void
+    {
+        DB::table('houses')->truncate();
+        
+        $csvPath = database_path('data/houses.csv');
+        if (!file_exists($csvPath)) {
+            $this->command->error("CSV file not found at {$csvPath}");
+            return;
+        }
+
+        $handle = fopen($csvPath, 'r');
+        $header = fgetcsv($handle); // Пропускаем заголовок
+
+        while (($data = fgetcsv($handle)) !== false) {
+            DB::table('houses')->insert([
+                'name' => $data[0],
+                'bedrooms' => (int)$data[1],
+                'bathrooms' => (int)$data[2],
+                'storeys' => (int)$data[3],
+                'garages' => (int)$data[4],
+                'price' => (int)$data[5],
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        }
+        fclose($handle);
+    }
+}
+
+(CSV-файл houses.csv должен лежать в database/data/)
+
+2. Модель и Контроллер (Eloquent & Controller)
+Логика поиска вынесена в скоуп модели для чистоты контроллера.
+
+app/Models/House.php:
+
+php
+Копировать
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Model;
+
+class House extends Model
+{
+    protected $fillable = ['name', 'bedrooms', 'bathrooms', 'storeys', 'garages', 'price'];
+
+    public function scopeFilter(Builder $query, array $filters): Builder
+    {
+        return $query
+            ->when($filters['name'] ?? false, fn($q, $name) => $q->where('name', 'LIKE', "%{$name}%"))
+            ->when($filters['bedrooms'] ?? false, fn($q, $val) => $q->where('bedrooms', $val))
+            ->when($filters['bathrooms'] ?? false, fn($q, $val) => $q->where('bathrooms', $val))
+            ->when($filters['storeys'] ?? false, fn($q, $val) => $q->where('storeys', $val))
+            ->when($filters['garages'] ?? false, fn($q, $val) => $q->where('garages', $val))
+            ->when(isset($filters['price_from']) && isset($filters['price_to']), 
+                fn($q) => $q->whereBetween('price', [(int)$filters['price_from'], (int)$filters['price_to']])
+            );
+    }
+}
+
+app/Http/Controllers/Api/HouseController.php:
+
+php
+Копировать
+use App\Models\House;
+use Illuminate\Http\Request;
+
+class HouseController extends Controller
+{
+    public function index(Request $request)
+    {
+        $filters = $request->only([
+            'name', 'bedrooms', 'bathrooms', 'storeys', 'garages', 'price_from', 'price_to'
+        ]);
+
+        $houses = House::filter($filters)->get();
+
+        return response()->json($houses);
+    }
+}
+
+3. Маршрутизация (API Routes)
+routes/api.php:
+
+php
+Копировать
+use App\Http\Controllers\Api\HouseController;
+use Illuminate\Support\Facades\Route;
+
+Route::get('/houses', [HouseController::class, 'index']);
+Frontend (Vue 3 + Element Plus)
+
+Компонент поиска реализован на Composition API. Это показывает владение современным синтаксисом Vue.
+
+resources/js/components/HouseSearch.vue:
+
+vue
+Копировать
+<script setup>
+import { ref, reactive } from 'vue';
+import { Search, Refresh } from '@element-plus/icons-vue';
+import { HouseTable, Loading } from '@element-plus/icons-vue';
+import { ElMessage } from 'element-plus';
+
+const filters = reactive({
+    name: '',
+    bedrooms: '',
+    bathrooms: '',
+    storeys: '',
+    garages: '',
+    price_from: '',
+    price_to: ''
+});
+
+const results = ref([]);
+const loading = ref(false);
+const noResults = ref(false);
+
+const search = async () => {
+    loading.value = true;
+    noResults.value = false;
+    
+    try {
+        const query = new URLSearchParams();
+        Object.entries(filters).forEach(([key, value]) => {
+            if (value !== '' && value !== null) {
+                query.append(key, value);
+            }
+        });
+
+        const response = await fetch(`/api/houses?${query.toString()}`);
+        const data = await response.json();
+
+        if (data.length === 0) {
+            noResults.value = true;
+            results.value = [];
+        } else {
+            results.value = data;
+        }
+    } catch (error) {
+        ElMessage.error('Ошибка при запросе к серверу');
+        results.value = [];
+    } finally {
+        loading.value = false;
+    }
+};
+
+const reset = () => {
+    Object.keys(filters).forEach(key => filters[key] = '');
+    results.value = [];
+    noResults.value = false;
+};
+</script>
+
+<template>
+    <el-card>
+        <el-form :model="filters" label-position="top">
+            <el-row :gutter="20">
+                <el-col :span="6"><el-form-item label="Название (частично)"><el-input v-model="filters.name" /></el-form-item></el-col>
+                <el-col :span="3"><el-form-item label="Спальни"><el-input-number v-model="filters.bedrooms" :min="0" /></el-form-item></el-col>
+                <el-col :span="3"><el-form-item label="Ванные"><el-input-number v-model="filters.bathrooms" :min="0" /></el-form-item></el-col>
+                <el-col :span="3"><el-form-item label="Этажи"><el-input-number v-model="filters.storeys" :min="0" /></el-form-item></el-col>
+                <el-col :span="3"><el-form-item label="Гаражи"><el-input-number v-model="filters.garages" :min="0" /></el-form-item></el-col>
+                <el-col :span="6">
+                    <el-row :gutter="10">
+                        <el-col :span="11"><el-form-item label="Цена от"><el-input-number v-model="filters.price_from" :min="0" /></el-form-item></el-col>
+                        <el-col :span="2" style="text-align: center; padding-top: 32px;">-</el-col>
+                        <el-col :span="11"><el-form-item label="Цена до"><el-input-number v-model="filters.price_to" :min="0" /></el-form-item></el-col>
+                    </el-row>
+                </el-col>
+            </el-row>
+            <el-form-item>
+                <el-button type="primary" @click="search" :icon="Search" :loading="loading">Поиск</el-button>
+                <el-button @click="reset" :icon="Refresh">Сброс</el-button>
+            </el-form-item>
+        </el-form>
+
+        <el-divider v-if="results.length > 0 || noResults" />
+
+        <div v-if="loading" class="text-center py-4">
+            <el-icon class="is-loading" size="32"><Loading /></el-icon>
+        </div>
+
+        <div v-else-if="noResults" class="text-center py-4 text-gray-500">
+            Ничего не найдено. Попробуйте изменить параметры поиска.
+        </div>
+
+        <el-table v-else-if="results.length > 0" :data="results" style="width: 100%">
+            <el-table-column prop="name" label="Название" />
+            <el-table-column prop="bedrooms" label="Спальни" width="100" />
+            <el-table-column prop="bathrooms" label="Ванные" width="100" />
+            <el-table-column prop="storeys" label="Этажи" width="100" />
+            <el-table-column prop="garages" label="Гаражи" width="100" />
+            <el-table-column label="Цена" width="150">
+                <template #default="scope">
+                    $ {{ scope.row.price.toLocaleString() }}
+                </template>
+            </el-table-column>
+        </el-table>
+    </el-card>
+</template>
+
+Подключение в resources/js/app.js:
+
+javascript
+Копировать
+import './bootstrap';
+import { createApp } from 'vue';
+import HouseSearch from './components/HouseSearch.vue';
+import ElementPlus from 'element-plus';
+import 'element-plus/dist/index.css';
+
+createApp(HouseSearch).use(ElementPlus).mount('#app');
+Git Workflow (Commit Strategy)
+
+Соблюдается правило «commit early, commit often». Лог коммитов будет выглядеть так:
+
+feat: project skeleton and database setup — установка Laravel, создание миграции и модели.
+feat: csv seeder implementation — написание сидера для загрузки данных.
+feat: API endpoint and filtering logic — создание маршрута и скоупа фильтрации.
+feat: vue frontend scaffold — настройка Vite, установка Element Plus.
+feat: reactive search form with axios/fetch — реализация логики поиска во Vue.
+feat: results table and loading state — рендер таблицы, индикатор загрузки, сообщение об отсутствии результатов.
+docs: update README with setup instructions — финализация документации.
+README.md (Инструкции по запуску)
+markdown
+Копировать
+# Laravel House Search Test
+
+## Prerequisites
+- PHP 8.4+
+- Composer
+- Node.js 18+ & NPM
+- SQLite (or configured MySQL)
+
+## Installation
+
+1. Clone the repository:
+   ```bash
+   git clone <your-repo-url>
+   cd <repo-folder>
+
+Install backend dependencies:
+
+bash
+Копировать
+composer install
+
+Install frontend dependencies:
+
+bash
+Копировать
+npm install
+
+Create environment file and generate key:
+
+bash
+Копировать
+cp .env.example .env
+php artisan key:generate
+
+Set database connection in .env (default is SQLite):
+
+env
+Копировать
+DB_CONNECTION=sqlite
+DB_DATABASE=database/database.sqlite
+
+Create SQLite file (if using SQLite):
+
+bash
+Копировать
+touch database/database.sqlite
+
+Run migrations and seed the database:
+
+bash
+Копировать
+php artisan migrate --seed
+
+Build frontend assets:
+
+bash
+Копировать
+npm run build
+
+Start the development server:
+
+bash
+Копировать
+php artisan serve
+Usage
+
+Open your browser at http://127.0.0.1:8000. 
+The Vue.js search interface will be available on the homepage. 
+Ensure you have run npm run build so the compiled assets are served.
+
+API Documentation
+
+GET /api/houses
+Optional query parameters: name, bedrooms, bathrooms, storeys, garages, price_from, price_to.
+Returns JSON array of houses.
+
+Копировать
+
+### Что это демонстрирует работодателю:
+*   **Внимание к деталям:** Точное следование ТЗ (числовые типы, опциональность параметров, JSON-ответы).
+*   **Чистая архитектура:** Использование Eloquent Scope для сложной логики фильтрации вместо «лапши» в контроллере.
+*   **Современный стек:** Composition API в Vue, использование готовых UI-библиотек (Element Plus) для экономии времени.
+*   **Инженерный подход:** Наличие сидера для тестовых данных, понятный `README` и строгая дисциплина коммитов.
+
+Если нужно, я могу помочь с написанием PHPUnit-тестов для этого API (проверка фильтрации по каждому полю и диапазону цен) или добавить слой API Resources для форматирования вывода (например, чтобы цена всегда возвращалась в красивом виде). Также можно обсудить деплой этого приложения на тестовый сервер. Что бы ты хотел разобрать подробнее?
