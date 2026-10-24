@@ -1,0 +1,191 @@
+Voici une proposition de solution industrielle complète pour cette affectation technique. L'architecture est conçue pour être robuste, testable et prête pour la mise en production.
+
+1. Architecture et choix technologiques
+Langage & Framework : Java 21 avec Spring Boot 3. C'est le standard de l'industrie pour les API REST, offrant une configuration par défaut solide, une excellente intégration de test et une gestion simplifiée des dépendances.
+Client HTTP : WebClient (réactif, non bloquant) pour appeler les API externes. C'est la solution moderne et recommandée par Spring, plus performante que l'ancien RestTemplate.
+Validation : Bean Validation (Jakarta Validation) avec des annotations comme @NotBlank pour valider les paramètres d'entrée dès l'entrée du contrôleur.
+Gestion des erreurs : Utilisation de @ControllerAdvice pour centraliser la gestion des exceptions et retourner des réponses HTTP cohérentes (codes 400, 404, 500).
+Tests : 
+Tests unitaires avec JUnit 5 et Mockito pour isoler la logique métier.
+Tests d'intégration avec @WebMvcTest et MockRestServiceServer pour simuler les appels aux API externes sans les appeler réellement.
+Pagination : Implémentation manuelle de la pagination basée sur offset et limit pour correspondre exactement à la spécification.
+Documentation : SpringDoc OpenAPI (Swagger) pour générer automatiquement la documentation de l'API.
+2. Modèles de données (DTO)
+
+Les objets reçus des API externes sont désérialisés dans des classes simples. La logique de filtrage est ensuite appliquée sur ces objets.
+
+Jukebox.java : contient id, model, List<Component> components.
+Component.java : contient name.
+Setting.java : contient id, List<String> requires.
+ApiResponse.java (pour les API externes) : contient la liste des jukes ou l'objet settings.
+3. Logique métier (Service)
+
+Le cœur de l'application réside dans le service JukeboxService. La méthode principale findJukeboxesBySetting exécute la logique suivante :
+
+Validation : Vérifier que settingId n'est pas vide.
+Appels parallèles : Lancer deux requêtes WebClient en parallèle : une vers l'API des jukeboxes et une vers l'API des réglages.
+Recherche du réglage : Trouver l'objet Setting correspondant à l'ID fourni. Si non trouvé, lever une exception SettingNotFoundException (qui sera traduite en HTTP 404).
+Filtrage : 
+Filtrer la liste des jukeboxes pour ne conserver que ceux dont la liste de composantes (jukebox.components) contient tous les noms de composantes listés dans setting.requires. La vérification est insensible à la casse (ex: led_panel correspond à LED_Panel).
+Appliquer le filtre optionnel model (insensible à la casse).
+Pagination : Appliquer offset et limit sur la liste filtrée. Si offset est hors limites, retourner une liste vide.
+Réponse : Retourner la sous-liste paginée.
+
+Exemple de code métier (simplifié) :
+
+java
+Копировать
+// Dans JukeboxService.java
+public List<Jukebox> findJukeboxesBySetting(String settingId, String model, int offset, int limit) {
+    Setting setting = fetchSettingById(settingId)
+            .orElseThrow(() -> new SettingNotFoundException(settingId));
+
+    List<Jukebox> allJukes = fetchAllJukeboxes();
+
+    return allJukes.stream()
+        .filter(j -> j.getComponents().stream()
+            .map(Component::getName)
+            .map(String::toLowerCase)
+            .collect(Collectors.toSet())
+            .containsAll(setting.getRequires().stream().map(String::toLowerCase).toList()))
+        .filter(j -> model == null || j.getModel().equalsIgnoreCase(model))
+        .skip(offset)
+        .limit(limit)
+        .toList();
+}
+4. Contrôleur REST
+
+Le contrôleur expose un unique point d'entrée.
+
+Endpoint : GET /api/jukeboxes
+Paramètres : @RequestParam(required = true) String settingId, @RequestParam(required = false) String model, @RequestParam(defaultValue = "0") int offset, @RequestParam(defaultValue = "50") int limit.
+Réponse : 200 OK avec un corps JSON contenant la liste des objets Jukebox. Les en-têtes HTTP standards peuvent être ajoutés (ex: X-Total-Count).
+
+Exemple de réponse JSON (200 OK) :
+
+json
+Копировать
+[
+  {
+    "id": "5ca94a8ac470d3e47cd4713c",
+    "model": "fusion",
+    "components": [
+      { "name": "led_panel" },
+      { "name": "amplifier" }
+    ]
+  }
+]
+
+Exemples de gestion d'erreurs :
+
+400 Bad Request : settingId manquant ou vide.
+404 Not Found : Aucun réglage ne correspond à l'ID fourni.
+502 Bad Gateway : Erreur de communication avec l'une des API externes (timeout, 5xx).
+5. Documentation de l'API (OpenAPI)
+
+L'API est documentée via des annotations Spring (@Operation, @ApiResponse, @Parameter) sur le contrôleur. L'interface est accessible à l'URL /swagger-ui.html (ou /v3/api-docs). La documentation détaille les codes de statut, les schémas de réponse et les paramètres de requête attendus.
+
+6. Contournement des CORS
+
+L'hébergeur my-json-server.typicode.com n'étant pas configuré pour accepter les requêtes depuis un domaine local, l'application Java ne pourra pas appeler ces API directement depuis un navigateur. 
+
+Solution de contournement pour le développement :
+Configurer un proxy dans Spring Boot (via application.yml ou un WebMvcConfigurer) qui redirige les chemins /tech-assignment/jukes et /tech-assignment/settings vers l'URL externe. L'application s'appelle alors elle-même, et c'est le serveur backend qui effectue l'appel distant, résolvant ainsi le problème de CORS.
+
+7. Dockerisation (Bonus)
+
+Un Dockerfile multi-étapes est fourni pour construire une image production optimisée.
+
+Structure du Dockerfile :
+
+dockerfile
+Копировать
+# Étape 1 : Build avec Maven
+FROM eclipse-temurin:21-jdk-alpine AS build
+WORKDIR /app
+COPY pom.xml .
+COPY src ./src
+RUN ./mvnw -B package -DskipTests
+
+# Étape 2 : Runtime minimal avec JRE
+FROM eclipse-temurin:21-jre-alpine
+WORKDIR /app
+COPY --from=build /app/target/jukebox-assignment-0.0.1-SNAPSHOT.jar app.jar
+EXPOSE 8080
+ENTRYPOINT ["java", "-jar", "app.jar"]
+
+Fichier docker-compose.yml (recommandé) :
+Pour orchestrer l'application et faciliter le passage à l'échelle.
+
+yaml
+Копировать
+version: '3.8'
+services:
+  jukebox-api:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      - SERVER_PORT=8080
+
+Commandes de build et d'exécution :
+
+bash
+Копировать
+# Construire l'image
+docker build -t jukebox-assignment .
+
+# Lancer le conteneur
+docker run -p 8080:8080 jukebox-assignment
+
+# Ou via docker-compose
+docker-compose up --build
+8. Structure du projet (Arborescence)
+Копировать
+jukebox-assignment/
+├── src/
+│   ├── main/
+│   │   ├── java/com/company/jukebox/
+│   │   │   ├── JukeboxAssignmentApplication.java
+│   │   │   ├── controller/
+│   │   │   │   └── JukeboxController.java
+│   │   │   ├── service/
+│   │   │   │   ├── JukeboxService.java
+│   │   │   │   └── ExternalApiClient.java
+│   │   │   ├── model/
+│   │   │   │   ├── Jukebox.java
+│   │   │   │   ├── Component.java
+│   │   │   │   └── Setting.java
+│   │   │   └── exception/
+│   │   │       ├── SettingNotFoundException.java
+│   │   │       └── GlobalExceptionHandler.java
+│   │   └── resources/
+│   │       ├── application.yml
+│   │       └── openapi.yml (optionnel)
+│   └── test/
+│       └── java/com/company/jukebox/
+│           ├── JukeboxServiceTest.java
+│           └── JukeboxControllerIT.java
+├── Dockerfile
+├── docker-compose.yml
+├── pom.xml
+└── README.md
+9. Contenu du README.md
+
+Le fichier README.md du dépôt doit contenir :
+
+Un aperçu de la solution et son architecture.
+Les prérequis (Java 21, Maven, Docker).
+Les commandes pour construire (mvn clean package), lancer localement (mvn spring-boot:run) et tester l'API (avec curl).
+Les commandes pour construire et lancer l'image Docker.
+Un exemple d'appel API réussi :
+Recherche des jukeboxes supportant le réglage db886f37-16e3-4a55-80e4-cfffc9e4e464 (qui requiert led_panel et money_receiver) :
+bash
+Копировать
+curl "http://localhost:8080/api/jukeboxes?settingId=db886f37-16e3-4a55-80e4-cfffc9e4e464"
+(Note : selon les données de la source, cette requête retournera probablement une liste vide car aucun jukebox ne possède à la fois led_panel et money_receiver).
+Un exemple d'appel avec filtre et pagination :
+bash
+Копировать
+curl "http://localhost:8080/api/jukeboxes?settingId=e9869bbe-887f-4d0a-bb9d-b81eb55fbf0a&model=fusion&offset=0&limit=10"
+Lien vers la documentation Swagger une fois l'application lancée.
